@@ -46,98 +46,103 @@ def main():
 2. Mineral Resources Limited (MIN.AX)
 
 ═══════════════════════════════════════════════════════════
-SECTION 1: PRICE DATA (MANDATORY - USE YAHOO FINANCE)
+SECTION 1: PRICE DATA (MANDATORY - FETCH YAHOO FINANCE PAGE)
 ═══════════════════════════════════════════════════════════
 
-For EACH stock, you MUST:
-1. Search: "site:au.finance.yahoo.com [ticker] history" 
-2. Navigate to the historical prices table
-3. Find the last TWO complete trading days' CLOSING prices
-4. Report EXACTLY what Yahoo shows
+You MUST use web_fetch tool to retrieve the Yahoo Finance historical data page:
 
-Example format:
-**AUB.AX Price Data:**
-- Yahoo Finance URL: https://au.finance.yahoo.com/quote/AUB.AX/history/
-- Most Recent Close ({yesterday}): A$XX.XX
-- Previous Close ({day_before}): A$YY.YY
-- Percentage Change: Calculate: ((Recent - Previous) / Previous) × 100
+For AUB.AX: Use web_fetch on https://au.finance.yahoo.com/quote/AUB.AX/history/
+For MIN.AX: Use web_fetch on https://au.finance.yahoo.com/quote/MIN.AX/history/
 
-⚠️ DO NOT GUESS PRICES - Only report what Yahoo Finance actually shows
+Look at the historical prices table in the fetched page.
+Find the most recent 2 complete trading days.
+Report the CLOSE prices from the table.
+
+Example from the table:
+Date          Open    High    Low     Close*   Adj Close**  Volume
+Jan 21, 2026  31.50   31.80   31.00   31.10    31.10       X
+Jan 20, 2026  37.00   37.50   36.80   37.25    37.25       X
+
+Report:
+- Yesterday Close (Jan 21): A$31.10
+- Previous Day Close (Jan 20): A$37.25
+- Change: ((31.10 - 37.25) / 37.25) × 100 = -16.51%
+
+⚠️ YOU MUST USE WEB_FETCH TO GET THE ACTUAL PAGE
+⚠️ DO NOT GUESS - Only use data from the fetched page
 
 ═══════════════════════════════════════════════════════════
 SECTION 2: REASON FOR MOVE (Last 7 days: {week_ago} to {today})
 ═══════════════════════════════════════════════════════════
 
 Search for news from last 7 days ONLY.
-If NO news from last 7 days found: Write "No material company announcements in the past week"
-If news found: Provide date, description, and URL
+If NO news from last 7 days: "No material company announcements in the past week"
+Include hyperlinked source
 
 ═══════════════════════════════════════════════════════════
 SECTION 3: COMPANY DEVELOPMENTS (Last 7 days only)
 ═══════════════════════════════════════════════════════════
 
-Same rule: Only last 7 days or state "No new developments reported this week"
+Last 7 days only or "No new developments reported this week"
 
 ═══════════════════════════════════════════════════════════
 SECTION 4: LAST PRICE-SENSITIVE ANNOUNCEMENT
 ═══════════════════════════════════════════════════════════
 
-Search: "site:asx.com.au [ticker] price sensitive"
-Find the most recent PRICE-SENSITIVE announcement (trading update, profit warning, guidance change, material contract, etc.)
-Provide: Date, what it said, FULL ASX PDF URL
-Format: https://announcements.asx.com.au/asxpdf/YYYYMMDD/pdf/XXXXXXXXX.pdf
+Search: "site:asx.com.au [ticker] guidance" OR "trading update" OR "profit"
+Find most recent PRICE-SENSITIVE announcement
+MUST include:
+- Date
+- Summary with SPECIFIC FINANCIAL GUIDANCE NUMBERS if given (e.g., "FY26 NPAT guidance of $215-227M")
+- Full ASX PDF URL
 
-⚠️ Must be a real ASX URL from your search results
+⚠️ Be PRESCRIPTIVE about financial guidance - include the actual numbers
 
 ═══════════════════════════════════════════════════════════
 SECTION 5: LAST EARNINGS REPORT
 ═══════════════════════════════════════════════════════════
 
-Search: "site:asx.com.au [ticker] annual report" OR "half year results" OR "quarterly"
-Find the last financial results announcement
-Provide: Date, type (Annual/Half-Yearly/Quarterly), key numbers, FULL ASX PDF URL
+Search: "site:asx.com.au [ticker] results"
+Find last financial results
+MUST include KEY NUMBERS:
+- Revenue growth: X% to $XXM
+- NPAT/Profit growth: X% to $XXM  
+- EBITDA margin: X%
+- EPS growth: X% to $X.XX
+- Dividend: X cents per share
 
-⚠️ Must be a real ASX URL from your search results
-
-═══════════════════════════════════════════════════════════
-SECTION 6: INDUSTRY DYNAMICS (3 points with REAL URLs)
-═══════════════════════════════════════════════════════════
-
-Find 3 data points from last month with:
-- Specific date
-- Hard numbers (%, $, volumes)
-- REAL URL from: AFR, Bloomberg, Reuters, WSJ, FT, industry reports, government data
-
-⚠️ ONLY include if you found a REAL, WORKING URL in your search
-⚠️ If you cannot find 3 points with real URLs, include fewer points
+Full ASX PDF URL
 
 ═══════════════════════════════════════════════════════════
-SECTION 7: COMPETITIVE DYNAMICS (2 points with REAL URLs)
+SECTION 6: INDUSTRY DYNAMICS (3 points - SEPARATE FROM COMPETITORS)
 ═══════════════════════════════════════════════════════════
 
-Find 2 recent competitor news items:
-- Competitor announcements, results, strategic moves
-- Each with date and REAL URL
+Find 3 points about THE INDUSTRY (not competitors):
+- Market trends, regulatory changes, industry-wide data
+- Each with date, numbers, real URL
 
-⚠️ ONLY include if you found REAL URLs
-⚠️ If no relevant competitor news with URLs: "No material competitor developments to report"
+⚠️ This section is about INDUSTRY, not individual competitors
 
 ═══════════════════════════════════════════════════════════
-🚨 CRITICAL RULES 🚨
+SECTION 7: COMPETITIVE DYNAMICS (2 points - COMPETITOR NEWS ONLY)
 ═══════════════════════════════════════════════════════════
 
-1. Every URL you provide MUST be from your actual web search results
-2. Do NOT make up URLs
-3. Do NOT use placeholder URLs
-4. Better to have FEWER items with real URLs than MORE items with fake URLs
-5. If you cannot verify data, say so rather than guessing
+Find 2 points about COMPETITOR companies:
+- Specific competitor announcements, results
+- Each with date and real URL
 
-Research thoroughly using web search."""
+⚠️ This section is about COMPETITORS, not general industry
+⚠️ If no competitor news: "No material competitor developments to report"
+
+Research thoroughly using web_search and web_fetch."""
 
         message1 = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=20000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            model="claude-opus-4-20250514",  # Changed to Opus 4.5
+            max_tokens=25000,
+            tools=[
+                {"type": "web_search_20250305", "name": "web_search"},
+                {"type": "web_fetch_20250305", "name": "web_fetch"}
+            ],
             messages=[{"role": "user", "content": step1_prompt}]
         )
         
@@ -214,13 +219,16 @@ Create clean HTML:
 
 <p style="margin:15px 0 5px 0;font-size:14px;"><strong style="color:#2980b9;">INDUSTRY DYNAMICS:</strong></p>
 <ul style="margin:5px 0 10px 20px;padding:0;line-height:1.8;font-size:14px;">
-<li><strong>Date:</strong> Data - <a href="REAL_URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li><strong>Date:</strong> Industry-wide data point - <a href="REAL_URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li><strong>Date:</strong> Market trend or regulatory change - <a href="REAL_URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li><strong>Date:</strong> Industry statistics - <a href="REAL_URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
 </ul>
 
 <p style="margin:15px 0 5px 0;font-size:14px;"><strong style="color:#2980b9;">COMPETITIVE DYNAMICS:</strong></p>
 <ul style="margin:5px 0 10px 20px;padding:0;line-height:1.8;font-size:14px;">
-<li><strong>Date:</strong> Competitor info - <a href="REAL_URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
-<li>OR: "No material competitor developments to report"</li>
+<li><strong>Date:</strong> Specific competitor name and news - <a href="REAL_URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li><strong>Date:</strong> Another competitor name and news - <a href="REAL_URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li>OR if no competitor news: "No material competitor developments to report"</li>
 </ul>
 
 <hr style="border:0;border-top:2px solid #ddd;margin:30px 0;">
@@ -235,12 +243,16 @@ RULES:
 - Use ONLY URLs from the research
 - Green: style="color:#00AA00;font-weight:bold;"
 - Red: style="color:#DD0000;font-weight:bold;"
-- TWO separate sections: INDUSTRY DYNAMICS and COMPETITIVE DYNAMICS
+- ⚠️ CRITICAL: Create TWO COMPLETELY SEPARATE sections:
+  1. INDUSTRY DYNAMICS (about the industry/market, not specific competitors)
+  2. COMPETITIVE DYNAMICS (about specific competitor companies)
+- For Last Price-Sensitive Announcement: Include specific financial guidance numbers if provided
+- For Last Earnings Report: Include key growth numbers (revenue %, profit %, margins, EPS, dividend)
 - Start with <!DOCTYPE html>, end with </html>"""
 
         message2 = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=12000,
+            model="claude-opus-4-20250514",  # Changed to Opus 4.5
+            max_tokens=15000,
             messages=[{"role": "user", "content": step2_prompt}]
         )
         
