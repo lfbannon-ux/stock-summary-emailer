@@ -74,9 +74,9 @@ def main():
         client = anthropic.Anthropic(api_key=anthropic_key)
         today = datetime.now().strftime("%B %d, %Y")
         
-        prompt = f"""You are generating a professional stock market summary report. Output ONLY the HTML report - no preambles, explanations, or apologies.
+        prompt = f"""Generate the HTML stock summary report NOW. Do not explain your process, do not describe what you're doing, do not mention search results or data sources in your response. Your ENTIRE response must be valid HTML starting with <h1> and ending with </body></html>.
 
-Generate a comprehensive daily stock summary report for {today} for the following 19 Australian stocks IN THIS EXACT ORDER:
+Generate a comprehensive daily stock summary report for {today} for these 19 Australian stocks:
 
 1. AUB Group Limited (AUB.AX) - Australian insurance broker
 2. Mineral Resources Limited (MIN.AX) - Mining and resources
@@ -178,7 +178,11 @@ FORMAT AS PROFESSIONAL HTML EMAIL:
 - All sources must be clickable hyperlinks
 - Professional styling suitable for email viewing
 
-Begin generating the HTML report NOW."""
+YOUR RESPONSE MUST START WITH: <html><head><style>
+YOUR RESPONSE MUST END WITH: </body></html>
+DO NOT include any text before <html> or after </html>
+DO NOT explain your search process or mention data limitations
+Generate the complete HTML report now."""
 
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
