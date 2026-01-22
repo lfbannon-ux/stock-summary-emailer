@@ -5,13 +5,12 @@ import sendgrid
 from sendgrid.helpers.mail import Mail, Email, To, Content
 from datetime import datetime
 import anthropic
-import json
 
 def main():
     """Generate and send daily stock summary using two-step approach"""
     
     print("=" * 60)
-    print(f"🚀 Berkholts Daily Stock Summary (2-Step Approach)")
+    print(f"🚀 Berkholts Daily Stock Summary (Outlook-Compatible)")
     print(f"📊 2 Companies")
     print(f"⏰ {datetime.now()}")
     print("=" * 60)
@@ -32,7 +31,7 @@ def main():
     client = anthropic.Anthropic(api_key=anthropic_key)
     today = datetime.now().strftime("%B %d, %Y")
     
-    # STEP 1: Gather data naturally (let Claude explain and search)
+    # STEP 1: Gather data
     try:
         print("\n" + "=" * 60)
         print("STEP 1: Gathering data (2-3 minutes)...")
@@ -46,30 +45,27 @@ def main():
 For each company, find and provide:
 
 **CURRENT PRICE & YESTERDAY'S CHANGE**
-Search for current stock price and yesterday's movement
 
 **REASON FOR MOVE (Last 7 days only)**
-Find any material news or company announcements from the last 7 days
-Include specific dates
-If nothing material in last 7 days, note that
+Material news or announcements from last 7 days with specific dates
 
 **COMPANY DEVELOPMENTS (Last 7 days only)**
-Any new developments from the past week
-Include dates and sources
+New developments from past week with dates and sources
 
 **LAST COMPANY ANNOUNCEMENT**
-Search: site:asx.com.au [ticker] announcement
-Find the most recent material ASX announcement
-Include: date, summary with specific numbers/guidance, and the ASX announcement URL
+Search: site:asx.com.au [ticker] announcement (focus on price sensitive announcements)
+Most recent material ASX announcement with date, summary, and URL
+
+**LAST EARNINGS REPORT**
+Last time the company reported either annual, half-yearly, quarterly or trading update & what that includes
 
 **INDUSTRY/COMPETITIVE DYNAMICS (Last month)**
-3 data points with:
-- Specific dates
-- Hard data (percentages, dollar amounts, volumes)
-- Sources from: AFR, Bloomberg, Reuters, industry magazines, government data
-- Exclude: Motley Fool, Simply Wall St, TradingView
+4 data points with dates, hard data, and credible sources (Trade magazines, reputable newspapers: WSJ, FT, AFR, Bloomberg, Reuters, government data, competitor filings or announcements)
+Exclude: Motley Fool, Simply Wall St, TradingView and any other unsophisticated publications
 
-Please research thoroughly and provide all the information you find. You can explain your search process - this is just for data gathering."""
+FOR EVERYTHING - MAKE SURE THERE IS A SOURCE THAT IS HYPERLINKED
+
+Research thoroughly."""
 
         message1 = client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -78,89 +74,105 @@ Please research thoroughly and provide all the information you find. You can exp
             messages=[{"role": "user", "content": step1_prompt}]
         )
         
-        # Extract the research content
         research_content = ""
         for block in message1.content:
             if block.type == "text":
                 research_content += block.text
         
-        print(f"✅ Research gathered: {len(research_content)} characters")
-        print("\nResearch preview (first 500 chars):")
-        print(research_content[:500])
-        print("...\n")
+        print(f"✅ Research: {len(research_content)} characters")
         
     except Exception as e:
-        print(f"❌ Error in Step 1: {e}")
+        print(f"❌ Step 1 error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
     
-    # STEP 2: Convert to clean HTML
+    # STEP 2: Convert to Outlook-compatible HTML
     try:
-        print("=" * 60)
-        print("STEP 2: Converting to HTML...")
+        print("\n" + "=" * 60)
+        print("STEP 2: Converting to Outlook-compatible HTML...")
         print("=" * 60)
         
-        step2_prompt = f"""Take the research data below and convert it into a clean HTML email report.
+        step2_prompt = f"""Convert the research below into HTML email format.
 
 RESEARCH DATA:
 {research_content}
 
-OUTPUT REQUIREMENTS:
-Create a properly formatted HTML email with this EXACT structure:
+Create HTML with this EXACT structure (Outlook-compatible):
 
 <!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;padding:20px;background-color:#ffffff;">
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f4f4;">
+<tr>
+<td align="center" style="padding:20px;">
+<table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;">
+<tr>
+<td style="padding:30px;">
 
-<h1 style="color:#2c3e50;border-bottom:3px solid #3498db;padding-bottom:10px;margin-bottom:30px;">Berkholts Stock Summaries - {today}</h1>
+<h1 style="color:#2c3e50;font-size:24px;margin:0 0 10px 0;padding:0 0 10px 0;border-bottom:3px solid #3498db;">Berkholts Stock Summaries - {today}</h1>
 
-<h2 style="color:#34495e;margin-top:40px;border-bottom:2px solid #95a5a6;padding-bottom:8px;">1. AUB Group Limited (AUB.AX)</h2>
+<h2 style="color:#34495e;font-size:20px;margin:30px 0 10px 0;padding:0 0 8px 0;border-bottom:2px solid #95a5a6;">1. AUB Group Limited (AUB.AX)</h2>
 
-<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">PRICE:</strong> A$XX.XX | <strong style="color:#2980b9;">YESTERDAY:</strong> <span style="color:#00AA00;font-weight:bold;">+A$X.XX (+X.XX%)</span></p>
+<p style="margin:10px 0;line-height:1.6;"><strong style="color:#2980b9;">PRICE:</strong> A$XX.XX | <strong style="color:#2980b9;">YESTERDAY:</strong> <span style="color:#00AA00;font-weight:bold;">+A$X.XX (+X.XX%)</span></p>
 
-<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">REASON FOR MOVE:</strong> [Info from research]</p>
+<p style="margin:10px 0;line-height:1.6;"><strong style="color:#2980b9;">REASON FOR MOVE:</strong> [Info with hyperlinked source]</p>
 
-<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">COMPANY DEVELOPMENTS (Past Week):</strong></p>
-<ul style="line-height:1.8;margin:10px 0;">
+<p style="margin:10px 0;line-height:1.6;"><strong style="color:#2980b9;">COMPANY DEVELOPMENTS (Past Week):</strong></p>
+<ul style="margin:10px 0;padding-left:20px;line-height:1.8;">
 <li><span style="color:#FF8800;font-weight:bold;">[NEW]</span> <strong>Date:</strong> Development - <a href="URL" style="color:#3498db;text-decoration:none;">Source</a></li>
 </ul>
 
-<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">LAST COMPANY ANNOUNCEMENT:</strong></p>
-<ul style="line-height:1.8;margin:10px 0;">
+<p style="margin:10px 0;line-height:1.6;"><strong style="color:#2980b9;">LAST COMPANY ANNOUNCEMENT:</strong></p>
+<ul style="margin:10px 0;padding-left:20px;line-height:1.8;">
 <li><strong>Date:</strong> [Date]</li>
-<li><strong>Summary:</strong> [Summary with numbers]</li>
-<li><strong>Source:</strong> <a href="[ASX URL]" style="color:#3498db;text-decoration:none;">ASX Announcement</a></li>
+<li><strong>Summary:</strong> [Summary]</li>
+<li><strong>Source:</strong> <a href="[URL]" style="color:#3498db;text-decoration:none;">ASX Announcement</a></li>
 </ul>
 
-<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">INDUSTRY/COMPETITIVE DYNAMICS:</strong></p>
-<ul style="line-height:1.8;margin:10px 0;">
-<li><strong>Date:</strong> Data point - <a href="URL" style="color:#3498db;text-decoration:none;">Source Name</a></li>
-<li><strong>Date:</strong> Data point - <a href="URL" style="color:#3498db;text-decoration:none;">Source Name</a></li>
-<li><strong>Date:</strong> Data point - <a href="URL" style="color:#3498db;text-decoration:none;">Source Name</a></li>
+<p style="margin:10px 0;line-height:1.6;"><strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong></p>
+<ul style="margin:10px 0;padding-left:20px;line-height:1.8;">
+<li><strong>Date:</strong> [Date]</li>
+<li><strong>Type:</strong> [Annual/Half-Yearly/Quarterly/Trading Update]</li>
+<li><strong>Summary:</strong> [Key metrics and highlights]</li>
+<li><strong>Source:</strong> <a href="[URL]" style="color:#3498db;text-decoration:none;">ASX Announcement</a></li>
 </ul>
 
-<hr style="border:none;border-top:1px solid #ddd;margin:30px 0;">
+<p style="margin:10px 0;line-height:1.6;"><strong style="color:#2980b9;">INDUSTRY/COMPETITIVE DYNAMICS:</strong></p>
+<ul style="margin:10px 0;padding-left:20px;line-height:1.8;">
+<li><strong>Date:</strong> Data point with numbers - <a href="URL" style="color:#3498db;text-decoration:none;">Source</a></li>
+<li><strong>Date:</strong> Data point with numbers - <a href="URL" style="color:#3498db;text-decoration:none;">Source</a></li>
+<li><strong>Date:</strong> Data point with numbers - <a href="URL" style="color:#3498db;text-decoration:none;">Source</a></li>
+<li><strong>Date:</strong> Data point with numbers - <a href="URL" style="color:#3498db;text-decoration:none;">Source</a></li>
+</ul>
+
+<hr style="border:0;border-top:1px solid #ddd;margin:30px 0;">
 
 [Repeat for company 2]
 
+</td>
+</tr>
+</table>
+</td>
+</tr>
+</table>
 </body>
 </html>
 
-CRITICAL RULES:
-- Start your response with <!DOCTYPE html> - nothing before it
-- End with </html> - nothing after it
-- Use <span style="color:#00AA00;font-weight:bold;"> for positive price changes
-- Use <span style="color:#DD0000;font-weight:bold;"> for negative price changes
-- ALL URLs must be in <a href="URL" style="color:#3498db;text-decoration:none;">Text</a> format
-- NEVER show raw URLs like https://... or <https://...>
-- Use the data from the research above
+KEY RULES:
+- Use TABLE layout (Outlook needs this)
+- Fixed width: 600px
+- All styles inline
+- Green for gains: style="color:#00AA00;font-weight:bold;"
+- Red for losses: style="color:#DD0000;font-weight:bold;"
+- ALL sources MUST be hyperlinked: <a href="URL" style="color:#3498db;text-decoration:none;">Source Name</a>
+- NEVER show raw URLs
+- EVERY piece of information needs a hyperlinked source
 
-Generate the HTML now. Your entire response should be valid HTML from <!DOCTYPE to </html>."""
+Start with <!DOCTYPE html> and end with </html>. Nothing before or after."""
 
         message2 = client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -168,37 +180,36 @@ Generate the HTML now. Your entire response should be valid HTML from <!DOCTYPE 
             messages=[{"role": "user", "content": step2_prompt}]
         )
         
-        # Extract HTML
         html_content = ""
         for block in message2.content:
             if block.type == "text":
                 html_content += block.text
         
-        # Clean up - remove any text before <!DOCTYPE or <html
+        # Clean
         import re
         html_match = re.search(r'(<!DOCTYPE[^>]*>)?\s*<html.*?</html>', html_content, re.DOTALL | re.IGNORECASE)
         if html_match:
             html_content = html_match.group(0)
         
-        print(f"✅ HTML generated: {len(html_content)} characters")
+        print(f"✅ HTML: {len(html_content)} characters")
         
     except Exception as e:
-        print(f"❌ Error in Step 2: {e}")
+        print(f"❌ Step 2 error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
     
-    # Send emails
+    # Send
     try:
         print("\n" + "=" * 60)
-        print("STEP 3: Sending emails...")
+        print("Sending emails...")
         print("=" * 60)
         
         sg = sendgrid.SendGridAPIClient(api_key=sendgrid_key)
         subject = f"Berkholts Stock Summaries - {today}"
         
         for recipient in recipient_emails:
-            print(f"📤 Sending to {recipient}...")
+            print(f"📤 {recipient}...")
             
             mail = Mail(
                 from_email=Email(from_email),
@@ -208,17 +219,12 @@ Generate the HTML now. Your entire response should be valid HTML from <!DOCTYPE 
             )
             
             response = sg.client.mail.send.post(request_body=mail.get())
-            print(f"   ✅ Sent! Status: {response.status_code}")
+            print(f"   ✅ Status: {response.status_code}")
         
-        print("\n" + "=" * 60)
-        print("✅ COMPLETE!")
-        print(f"⏰ Finished: {datetime.now()}")
-        print("=" * 60)
+        print("\n✅ COMPLETE!")
         
     except Exception as e:
-        print(f"❌ Error sending: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Send error: {e}")
         sys.exit(1)
 
 
