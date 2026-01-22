@@ -42,17 +42,26 @@ def main():
 1. AUB Group Limited (AUB.AX) - Insurance broker
 2. Mineral Resources Limited (MIN.AX) - Mining and resources
 
+Today's date is {today}. The "last 7 days" means from January 15, 2026 to January 22, 2026.
+
 For each company, YOU MUST find and provide ALL of the following:
 
 **CURRENT PRICE & YESTERDAY'S CHANGE**
-Search for: "AUB.AX stock price" or "MIN.AX stock price" to find TODAY'S actual current price
-Be VERY careful to get the correct, current price for {today}
+Search for: "AUB.AX stock price" or "MIN.AX stock price" to find TODAY'S current closing price
+Calculate YESTERDAY'S CHANGE as: Today's closing price minus Yesterday's closing price
+Example: If today is $31.10 and yesterday was $37.25, then change is -$6.15 (-16.51%)
+Be VERY careful with the math - double check your calculation
 
 **REASON FOR MOVE (Last 7 days only)**
-Material news from last 7 days with specific dates and sources
+CRITICAL: ONLY include news from the LAST 7 DAYS (from {today} backwards)
+If the most recent news is older than 7 days, you MUST state: "No material company announcements in the past week"
+Do NOT include old news from weeks or months ago
+Material news from last 7 days with specific dates and HYPERLINKED sources
+If mentioning market movements or sector trends, provide hyperlinked source (ASX Market Data, AFR, Bloomberg)
 
 **COMPANY DEVELOPMENTS (Last 7 days only)**
-New developments from past week with dates and sources
+New developments from past week with dates and HYPERLINKED sources
+If nothing: "No new developments reported this week" (do NOT say "limited developments")
 
 **LAST COMPANY ANNOUNCEMENT**
 Search: site:asx.com.au [ticker] announcement
@@ -62,8 +71,20 @@ Find most recent price-sensitive announcement with date, summary, and DIRECT ASX
 Search: site:asx.com.au [ticker] "results" OR "trading update"
 Find the last financial report with date, type, metrics, and DIRECT ASX.com.au URL
 
-**INDUSTRY/COMPETITIVE DYNAMICS (Last month)**
-Find EXACTLY 4 data points with dates, hard data, and DIRECT URLs from: WSJ, FT, AFR, Bloomberg, Reuters, trade magazines
+**INDUSTRY DYNAMICS (Last month)**
+Find EXACTLY 3 data points with:
+- Specific dates
+- Hard data (percentages, dollar amounts, volumes, growth rates)
+- HYPERLINKED sources from: WSJ, FT, AFR, Bloomberg, Reuters, trade magazines, government data
+CRITICAL: EVERY point MUST have a hyperlinked source URL
+Focus on: market trends, regulatory changes, economic factors affecting the industry
+
+**COMPETITIVE DYNAMICS**
+Find 2 bullet points on recent, fundamental news about competitors (if relevant):
+- Recent competitor announcements, results, strategic moves
+- Each with specific date and HYPERLINKED source
+- Only include if there is relevant, material competitor news in the last month
+- If no relevant competitor news: "No material competitor developments to report"
 
 CRITICAL: Provide DIRECT URLs to original sources (not search result URLs)."""
 
@@ -110,7 +131,7 @@ Create HTML with this structure:
 <table width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
 <td align="center" style="padding:20px;">
-<table width="600" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #ddd;">
+<table width="900" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #ddd;">
 <tr>
 <td style="padding:30px;">
 
@@ -124,14 +145,15 @@ Create HTML with this structure:
 </p>
 
 <p style="margin:10px 0;line-height:1.6;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-<strong style="color:#2980b9;">REASON FOR MOVE:</strong> Text with <a href="DIRECT_URL" style="color:#3498db;text-decoration:underline;">source</a>
+<strong style="color:#2980b9;">REASON FOR MOVE:</strong> Text explaining the reason with <a href="DIRECT_URL" style="color:#3498db;text-decoration:underline;">hyperlinked source</a> OR "No material company announcements in the past week"
 </p>
 
 <p style="margin:15px 0 5px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
 <strong style="color:#2980b9;">COMPANY DEVELOPMENTS (Past Week):</strong>
 </p>
 <ul style="margin:5px 0 10px 20px;padding:0;line-height:1.8;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-<li><span style="color:#FF8800;font-weight:bold;">[NEW]</span> Date: Info - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li><span style="color:#FF8800;font-weight:bold;">[NEW]</span> Date: Specific development with details - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li>OR if nothing: "No new developments reported this week"</li>
 </ul>
 
 <p style="margin:15px 0 5px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
@@ -154,13 +176,21 @@ Create HTML with this structure:
 </ul>
 
 <p style="margin:15px 0 5px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-<strong style="color:#2980b9;">INDUSTRY/COMPETITIVE DYNAMICS:</strong>
+<strong style="color:#2980b9;">INDUSTRY DYNAMICS:</strong>
 </p>
 <ul style="margin:5px 0 10px 20px;padding:0;line-height:1.8;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-<li><strong>Date:</strong> Data - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
-<li><strong>Date:</strong> Data - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
-<li><strong>Date:</strong> Data - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
-<li><strong>Date:</strong> Data - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li><strong>Date:</strong> Data point with numbers - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li><strong>Date:</strong> Data point with numbers - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li><strong>Date:</strong> Data point with numbers - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+</ul>
+
+<p style="margin:15px 0 5px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
+<strong style="color:#2980b9;">COMPETITIVE DYNAMICS:</strong>
+</p>
+<ul style="margin:5px 0 10px 20px;padding:0;line-height:1.8;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
+<li><strong>Date:</strong> Competitor news with details - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li><strong>Date:</strong> Competitor news with details - <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a></li>
+<li>OR: "No material competitor developments to report"</li>
 </ul>
 
 <hr style="border:0;border-top:2px solid #ddd;margin:30px 0;">
@@ -182,7 +212,9 @@ CRITICAL:
 - Red for negative: style="color:#DD0000;font-weight:bold;"
 - All links must have text-decoration:underline
 - Start with <!DOCTYPE html>, end with </html>
-- No text before or after HTML"""
+- No text before or after HTML
+- REASON FOR MOVE: Only include news from last 7 days (after {datetime.now().strftime("%B %d, %Y")} minus 7 days). If no recent news, write "No material company announcements in the past week"
+- Double-check price calculations: Yesterday's change = Today's price - Yesterday's price"""
 
         message2 = client.messages.create(
             model="claude-sonnet-4-20250514",
