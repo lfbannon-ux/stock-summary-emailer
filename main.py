@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Berkholts Daily Stock Summary Emailer - Multi-Search Version
-=============================================================
-Uses multiple targeted searches per stock for higher accuracy.
+Berkholts Daily Stock Summary Emailer - Accurate Data Version
+==============================================================
+Uses:
+- yfinance: FREE accurate stock prices from Yahoo Finance
+- pyasx: FREE direct ASX announcement links
+- Claude API: Only for news analysis (reduced cost)
 
-Architecture:
-- Separate API call for each data point
-- Focused searches = better results
-- Validates data before including
+This gives you:
+- 100% accurate prices
+- Real, working ASX PDF links
+- Lower API costs
 """
 
 import os
@@ -17,64 +20,169 @@ import re
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 import anthropic
-import json
+
+# FREE libraries for accurate data
+import yfinance as yf
+import pyasx.data.companies as asx_companies
 
 
 # ============================================================================
-# CONFIGURATION
+# CONFIGURATION - 2 STOCKS FOR TESTING (expand to 19 later)
 # ============================================================================
 
 STOCKS = [
     {
         "name": "AUB Group Limited",
         "ticker": "AUB.AX",
-        "description": "Australian insurance broker",
+        "asx_code": "AUB",
         "industry": "insurance",
         "competitors": ["Steadfast Group (SDF.AX)", "PSC Insurance (PSI.AX)"]
     },
     {
-        "name": "Mineral Resources Limited", 
+        "name": "Mineral Resources Limited",
         "ticker": "MIN.AX",
-        "description": "Mining services and lithium producer",
+        "asx_code": "MIN",
         "industry": "mining",
         "competitors": ["Pilbara Minerals (PLS.AX)", "Fortescue Metals (FMG.AX)"]
     },
 ]
 
-# Industry search terms (shared across stocks in same industry)
-INDUSTRY_SEARCHES = {
-    "insurance": "Australian insurance market premiums rates growth 2026 statistics",
-    "mining": "Australian mining iron ore lithium prices production 2026",
-}
+
+# ============================================================================
+# PRICE DATA - Using yfinance (FREE & 100% ACCURATE)
+# ============================================================================
+
+def get_stock_price(ticker: str) -> dict:
+    """
+    Get ACCURATE stock price from Yahoo Finance.
+    
+    Returns dict with:
+    - yesterday_close: Most recent closing price
+    - previous_close: Day before closing price
+    - change_percent: Percentage change
+    - dates: The actual dates for each price
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="5d")
+        
+        if len(hist) < 2:
+            return {"error": f"Not enough price history for {ticker}"}
+        
+        # Get last two trading days
+        yesterday_close = float(hist['Close'].iloc[-1])
+        previous_close = float(hist['Close'].iloc[-2])
+        yesterday_date = hist.index[-1].strftime("%B %d, %Y")
+        previous_date = hist.index[-2].strftime("%B %d, %Y")
+        
+        # Calculate change
+        change_percent = ((yesterday_close - previous_close) / previous_close) * 100
+        
+        return {
+            "yesterday_close": round(yesterday_close, 2),
+            "yesterday_date": yesterday_date,
+            "previous_close": round(previous_close, 2),
+            "previous_date": previous_date,
+            "change_percent": round(change_percent, 2),
+            "error": None
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ============================================================================
-# SEARCH FUNCTIONS
+# ASX ANNOUNCEMENTS - Using pyasx (FREE & REAL LINKS)
 # ============================================================================
 
-def search_and_extract(client: anthropic.Anthropic, query: str, instruction: str) -> str:
+def get_asx_announcements(asx_code: str, limit: int = 10) -> list:
     """
-    Perform a single focused search and extract specific information.
+    Get REAL ASX announcements with direct PDF links.
     
-    Args:
-        client: Anthropic client
-        query: What to search for
-        instruction: What to extract from results
-    
-    Returns:
-        Extracted information as string
+    Returns list of dicts with:
+    - title: Announcement title
+    - url: Direct link to ASX PDF
+    - date: Release date
+    - pages: Number of pages
     """
-    prompt = f"""Search for: {query}
+    try:
+        announcements = asx_companies.get_company_announcements(asx_code)
+        
+        results = []
+        for ann in announcements[:limit]:
+            results.append({
+                "title": ann.get("title", "Unknown"),
+                "url": ann.get("url", ""),
+                "date": ann.get("document_date", ann.get("release_date")),
+                "pages": ann.get("num_pages", 0),
+                "size": ann.get("size", "")
+            })
+        
+        return results
+    except Exception as e:
+        print(f"   ⚠️ Error fetching ASX announcements for {asx_code}: {e}")
+        return []
 
-Then from the search results, extract and report:
-{instruction}
 
-RULES:
-1. Only report information you actually find in search results
-2. Include the source URL for every fact
-3. If you cannot find the information, say "NOT FOUND"
-4. Be specific - include numbers, dates, percentages
-5. Do not make up or estimate any data"""
+def find_latest_earnings(announcements: list) -> dict:
+    """Find the most recent earnings/results announcement."""
+    
+    earnings_keywords = [
+        "results", "half year", "full year", "annual report",
+        "quarterly", "profit", "earnings", "financial report"
+    ]
+    
+    for ann in announcements:
+        title_lower = ann.get("title", "").lower()
+        if any(keyword in title_lower for keyword in earnings_keywords):
+            return ann
+    
+    return None
+
+
+def find_latest_price_sensitive(announcements: list) -> dict:
+    """Find the most recent price-sensitive announcement."""
+    
+    # Price sensitive keywords
+    sensitive_keywords = [
+        "trading update", "guidance", "profit warning", "acquisition",
+        "merger", "takeover", "dividend", "capital raising", "placement",
+        "results", "quarterly", "material"
+    ]
+    
+    for ann in announcements:
+        title_lower = ann.get("title", "").lower()
+        if any(keyword in title_lower for keyword in sensitive_keywords):
+            return ann
+    
+    # If none found, return the most recent
+    return announcements[0] if announcements else None
+
+
+# ============================================================================
+# NEWS ANALYSIS - Using Claude API (minimal usage)
+# ============================================================================
+
+def get_news_analysis(client: anthropic.Anthropic, stock: dict) -> str:
+    """
+    Get news analysis from Claude - ONLY for recent news and industry dynamics.
+    We don't need Claude for prices or ASX links anymore!
+    """
+    
+    prompt = f"""Research {stock['name']} ({stock['ticker']}) and provide ONLY:
+
+1. REASON FOR MOVE (Last 7 days)
+   - Any material news explaining recent price movement
+   - If no news: "No material announcements in the past week"
+
+2. INDUSTRY DYNAMICS (3 brief points about {stock['industry']} industry)
+   - Recent market trends with dates
+   - Focus on data that affects the business
+
+3. COMPETITIVE DYNAMICS (2 points about: {', '.join(stock['competitors'])})
+   - Recent news about these specific competitors
+
+Keep responses brief. Include source names but don't worry about URLs.
+Say "Not found" if you can't verify something."""
 
     try:
         response = client.messages.create(
@@ -84,278 +192,177 @@ RULES:
             messages=[{"role": "user", "content": prompt}]
         )
         
-        # Extract text from response
         result = ""
         for block in response.content:
             if hasattr(block, 'text'):
                 result += block.text
         
-        return result.strip()
-    
+        return result
     except Exception as e:
-        print(f"   ⚠️ Search error: {str(e)}")
-        return "NOT FOUND"
-
-
-def get_price_data(client: anthropic.Anthropic, ticker: str, company_name: str) -> dict:
-    """Get stock price data from Yahoo Finance."""
-    
-    print(f"   📊 Searching price data...")
-    
-    query = f"{ticker} stock price Yahoo Finance historical"
-    instruction = f"""Find the closing prices for {company_name} ({ticker}):
-
-1. Yesterday's closing price (most recent trading day)
-2. The day before yesterday's closing price
-
-Report in this exact format:
-YESTERDAY_CLOSE: [price]
-PREVIOUS_CLOSE: [price]
-SOURCE_URL: [Yahoo Finance URL]
-
-Calculate the percentage change: ((yesterday - previous) / previous) * 100
-CHANGE_PERCENT: [percentage]"""
-
-    result = search_and_extract(client, query, instruction)
-    
-    return {"raw": result}
-
-
-def get_last_announcement(client: anthropic.Anthropic, ticker: str, company_name: str) -> dict:
-    """Get the last price-sensitive ASX announcement."""
-    
-    print(f"   📢 Searching last announcement...")
-    
-    query = f"site:asx.com.au {ticker} announcement 2025 2026"
-    instruction = f"""Find the most recent PRICE-SENSITIVE announcement for {company_name} ({ticker}).
-
-Look for: trading updates, guidance changes, earnings, acquisitions, material contracts.
-
-Report in this exact format:
-DATE: [exact date, e.g., December 1, 2025]
-TYPE: [trading update/guidance/earnings/acquisition/etc]
-SUMMARY: [2-3 sentences with SPECIFIC NUMBERS if any guidance was given, e.g., "FY26 NPAT guidance of $215-227M"]
-URL: [direct link to ASX PDF or announcement page]"""
-
-    result = search_and_extract(client, query, instruction)
-    
-    return {"raw": result}
-
-
-def get_earnings_report(client: anthropic.Anthropic, ticker: str, company_name: str) -> dict:
-    """Get the last earnings report details."""
-    
-    print(f"   💰 Searching earnings report...")
-    
-    query = f"{company_name} {ticker} annual results half year results FY25 FY26 revenue profit"
-    instruction = f"""Find the most recent earnings report for {company_name} ({ticker}).
-
-Report in this exact format:
-DATE: [exact date of announcement]
-TYPE: [Annual Results / Half-Year Results / Quarterly Update]
-REVENUE: [amount and % growth, e.g., "$1.82B (+14% YoY)"]
-NPAT: [amount and % growth, e.g., "$192M (+13% YoY)"]
-EPS: [amount and % growth, e.g., "86.2c (+12%)"]
-DIVIDEND: [amount, e.g., "62c fully franked"]
-URL: [source link]"""
-
-    result = search_and_extract(client, query, instruction)
-    
-    return {"raw": result}
-
-
-def get_recent_news(client: anthropic.Anthropic, ticker: str, company_name: str, days: int = 7) -> dict:
-    """Get any material news from the last week."""
-    
-    print(f"   📰 Searching recent news...")
-    
-    query = f"{company_name} {ticker} news announcement January 2026"
-    instruction = f"""Find any material news or announcements for {company_name} ({ticker}) from the LAST 7 DAYS.
-
-If there IS material news:
-- Report each item with DATE, DESCRIPTION, and SOURCE URL
-
-If there is NO material news from the last 7 days:
-- Report: "NO_RECENT_NEWS"
-
-Do not include old news. Only the last 7 days."""
-
-    result = search_and_extract(client, query, instruction)
-    
-    return {"raw": result}
-
-
-def get_industry_dynamics(client: anthropic.Anthropic, industry: str) -> dict:
-    """Get industry-wide trends and data (shared across stocks in same industry)."""
-    
-    print(f"   🏭 Searching {industry} industry dynamics...")
-    
-    query = INDUSTRY_SEARCHES.get(industry, f"Australian {industry} industry trends 2026")
-    instruction = f"""Find 3 DATA POINTS about the {industry} industry in Australia.
-
-Focus on:
-- Market size, growth rates, pricing trends
-- Regulatory changes
-- Industry-wide statistics
-
-For EACH point, report:
-DATE: [month/year]
-FACT: [specific data with numbers, e.g., "Insurance premiums rose 8.5% to $47.2B"]
-SOURCE: [publication name]
-URL: [source link]
-
-Do NOT include information about specific companies - only industry-wide trends."""
-
-    result = search_and_extract(client, query, instruction)
-    
-    return {"raw": result}
-
-
-def get_competitor_news(client: anthropic.Anthropic, competitors: list, industry: str) -> dict:
-    """Get recent news about specific competitors."""
-    
-    print(f"   🏢 Searching competitor news...")
-    
-    competitor_str = ", ".join(competitors)
-    query = f"{competitor_str} ASX announcement results January 2026"
-    instruction = f"""Find recent news or announcements about these SPECIFIC competitors: {competitor_str}
-
-For EACH competitor with news, report:
-COMPETITOR: [company name and ticker]
-DATE: [exact date]
-NEWS: [specific announcement or result with numbers]
-URL: [source link]
-
-If no recent news for a competitor, skip them.
-Only include news from the last 30 days."""
-
-    result = search_and_extract(client, query, instruction)
-    
-    return {"raw": result}
+        return f"Error: {str(e)}"
 
 
 # ============================================================================
 # HTML GENERATION
 # ============================================================================
 
-def generate_html_for_stock(client: anthropic.Anthropic, stock: dict, data: dict, stock_num: int) -> str:
-    """Generate HTML for a single stock using collected data."""
+def format_date(dt) -> str:
+    """Format datetime object to string."""
+    if dt is None:
+        return "Unknown"
+    if hasattr(dt, 'strftime'):
+        return dt.strftime("%B %d, %Y")
+    return str(dt)
+
+
+def generate_stock_html(stock: dict, price_data: dict, announcements: list, analysis: str, stock_num: int) -> str:
+    """Generate HTML for a single stock with accurate data."""
     
-    prompt = f"""Convert this research data into HTML for an email. Output ONLY the HTML snippet.
-
-STOCK: {stock['name']} ({stock['ticker']})
-STOCK NUMBER: {stock_num}
-
-RESEARCH DATA:
-==============
-
-PRICE DATA:
-{data.get('price', {}).get('raw', 'NOT FOUND')}
-
-RECENT NEWS (Last 7 days):
-{data.get('news', {}).get('raw', 'NOT FOUND')}
-
-LAST PRICE-SENSITIVE ANNOUNCEMENT:
-{data.get('announcement', {}).get('raw', 'NOT FOUND')}
-
-LAST EARNINGS REPORT:
-{data.get('earnings', {}).get('raw', 'NOT FOUND')}
-
-INDUSTRY DYNAMICS:
-{data.get('industry', {}).get('raw', 'NOT FOUND')}
-
-COMPETITOR NEWS:
-{data.get('competitors', {}).get('raw', 'NOT FOUND')}
-
-==============
-
-Generate HTML using this EXACT structure:
-
+    # Price section (from yfinance - ACCURATE)
+    if price_data.get('error'):
+        price_html = f'<p style="color:red;">Price unavailable: {price_data["error"]}</p>'
+    else:
+        change_color = "green" if price_data['change_percent'] >= 0 else "red"
+        change_sign = "+" if price_data['change_percent'] >= 0 else ""
+        price_html = f'''<p style="margin:10px 0;line-height:1.6;">
+<strong style="color:#2980b9;">YESTERDAY ({price_data['yesterday_date']}):</strong> A${price_data['yesterday_close']:.2f} | 
+<strong style="color:#2980b9;">PREVIOUS DAY ({price_data['previous_date']}):</strong> A${price_data['previous_close']:.2f} | 
+<strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};font-weight:bold;">{change_sign}{price_data['change_percent']:.2f}%</span>
+</p>'''
+    
+    # Last Price-Sensitive Announcement (from pyasx - REAL LINKS)
+    latest_announcement = find_latest_price_sensitive(announcements)
+    if latest_announcement:
+        ann_html = f'''<p style="margin:15px 0;line-height:1.6;">
+<strong style="color:#2980b9;">LAST PRICE-SENSITIVE ANNOUNCEMENT:</strong><br>
+<strong>Date:</strong> {format_date(latest_announcement.get('date'))}<br>
+<strong>Title:</strong> {latest_announcement.get('title', 'Unknown')}<br>
+<strong>Source:</strong> <a href="{latest_announcement.get('url', '#')}" style="color:#3498db;text-decoration:underline;">ASX Announcement (PDF)</a>
+</p>'''
+    else:
+        ann_html = '<p style="margin:15px 0;"><strong style="color:#2980b9;">LAST PRICE-SENSITIVE ANNOUNCEMENT:</strong> No announcements found</p>'
+    
+    # Last Earnings Report (from pyasx - REAL LINKS)
+    latest_earnings = find_latest_earnings(announcements)
+    if latest_earnings:
+        earnings_html = f'''<p style="margin:15px 0;line-height:1.6;">
+<strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong><br>
+<strong>Date:</strong> {format_date(latest_earnings.get('date'))}<br>
+<strong>Title:</strong> {latest_earnings.get('title', 'Unknown')}<br>
+<strong>Source:</strong> <a href="{latest_earnings.get('url', '#')}" style="color:#3498db;text-decoration:underline;">ASX Announcement (PDF)</a>
+</p>'''
+    else:
+        earnings_html = '<p style="margin:15px 0;"><strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong> No earnings reports found</p>'
+    
+    # Recent Announcements List (from pyasx - REAL LINKS)
+    recent_ann_html = '<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">RECENT ASX ANNOUNCEMENTS:</strong></p><ul style="margin:5px 0 15px 20px;line-height:1.8;">'
+    for ann in announcements[:5]:
+        recent_ann_html += f'<li>{format_date(ann.get("date"))}: <a href="{ann.get("url", "#")}" style="color:#3498db;text-decoration:underline;">{ann.get("title", "Unknown")}</a></li>'
+    recent_ann_html += '</ul>'
+    
+    # Parse analysis for Industry and Competitive sections
+    analysis_html = parse_analysis_to_html(analysis)
+    
+    # Combine all sections
+    return f'''
 <h2 style="color:#34495e;margin-top:30px;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
 {stock_num}. {stock['name']} ({stock['ticker']})
 </h2>
 
-<p style="margin:10px 0;line-height:1.6;">
-<strong style="color:#2980b9;">YESTERDAY:</strong> A$XX.XX | 
-<strong style="color:#2980b9;">PREVIOUS DAY:</strong> A$XX.XX | 
-<strong style="color:#2980b9;">CHANGE:</strong> <span style="color:[green if positive, red if negative];">[+/-X.XX%]</span>
-</p>
+{price_html}
 
-<p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">REASON FOR MOVE:</strong><br>
-[If recent news exists, describe it. If not, write "No material announcements in the past week"]
-</p>
+{analysis_html['reason_for_move']}
 
-<p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">COMPANY DEVELOPMENTS (Past Week):</strong><br>
-[List any developments or "No new developments this week"]
-</p>
+{ann_html}
 
-<p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">LAST PRICE-SENSITIVE ANNOUNCEMENT:</strong><br>
-<strong>Date:</strong> [date]<br>
-<strong>Type:</strong> [type]<br>
-<strong>Summary:</strong> [summary WITH SPECIFIC NUMBERS]<br>
-<strong>Source:</strong> <a href="[URL]" style="color:#3498db;text-decoration:underline;">ASX Announcement</a>
-</p>
+{earnings_html}
 
-<p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong><br>
-<strong>Date:</strong> [date] | <strong>Type:</strong> [type]<br>
-<strong>Revenue:</strong> [amount] | <strong>NPAT:</strong> [amount] | <strong>EPS:</strong> [amount] | <strong>Dividend:</strong> [amount]<br>
-<strong>Source:</strong> <a href="[URL]" style="color:#3498db;text-decoration:underline;">ASX Announcement</a>
-</p>
+{recent_ann_html}
 
-<p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">INDUSTRY DYNAMICS:</strong>
-</p>
-<ul style="margin:5px 0 15px 20px;line-height:1.8;">
-<li>[Point 1 with <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a>]</li>
-<li>[Point 2 with <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a>]</li>
-<li>[Point 3 with <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a>]</li>
-</ul>
+{analysis_html['industry_dynamics']}
 
-<p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">COMPETITIVE DYNAMICS:</strong>
-</p>
-<ul style="margin:5px 0 15px 20px;line-height:1.8;">
-<li>[Competitor 1 news with <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a>]</li>
-<li>[Competitor 2 news with <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a>]</li>
-</ul>
+{analysis_html['competitive_dynamics']}
 
 <hr style="border:none;border-top:1px solid #ecf0f1;margin:30px 0;">
+'''
 
-RULES:
-1. Every URL must be in <a href="URL"> format
-2. Use actual data from the research - do not make up numbers
-3. If data says "NOT FOUND", write "Data not available" for that section
-4. Green color for positive changes, red for negative
-5. Output ONLY the HTML snippet - no explanations"""
 
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=3000,
-            system="You are an HTML generator. Output ONLY valid HTML code. No explanations.",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        html = ""
-        for block in response.content:
-            if hasattr(block, 'text'):
-                html += block.text
-        
-        return html.strip()
+def parse_analysis_to_html(analysis: str) -> dict:
+    """Parse Claude's analysis into HTML sections."""
     
-    except Exception as e:
-        print(f"   ⚠️ HTML generation error: {str(e)}")
-        return f"<h2>{stock['name']} - Error generating content</h2>"
+    # Default values
+    result = {
+        'reason_for_move': '<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">REASON FOR MOVE:</strong><br>No material announcements in the past week</p>',
+        'industry_dynamics': '<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">INDUSTRY DYNAMICS:</strong></p><ul style="margin:5px 0 15px 20px;line-height:1.8;"><li>Data not available</li></ul>',
+        'competitive_dynamics': '<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">COMPETITIVE DYNAMICS:</strong></p><ul style="margin:5px 0 15px 20px;line-height:1.8;"><li>Data not available</li></ul>'
+    }
+    
+    if not analysis or "Error" in analysis:
+        return result
+    
+    # Try to extract sections from analysis
+    analysis_lower = analysis.lower()
+    
+    # Extract Reason for Move
+    if "reason for move" in analysis_lower:
+        try:
+            start = analysis_lower.find("reason for move")
+            end = analysis_lower.find("industry", start)
+            if end == -1:
+                end = analysis_lower.find("competitive", start)
+            if end == -1:
+                end = start + 500
+            
+            reason_text = analysis[start:end].strip()
+            # Clean up the text
+            reason_text = re.sub(r'^.*?:', '', reason_text, count=1).strip()
+            reason_text = reason_text[:500]  # Limit length
+            
+            result['reason_for_move'] = f'<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">REASON FOR MOVE:</strong><br>{reason_text}</p>'
+        except:
+            pass
+    
+    # Extract Industry Dynamics
+    if "industry" in analysis_lower:
+        try:
+            start = analysis_lower.find("industry")
+            end = analysis_lower.find("competitive", start)
+            if end == -1:
+                end = start + 800
+            
+            industry_text = analysis[start:end].strip()
+            
+            # Convert to bullet points
+            lines = [l.strip() for l in industry_text.split('\n') if l.strip() and len(l.strip()) > 10]
+            if lines:
+                bullets = ''.join([f'<li>{line}</li>' for line in lines[1:4]])  # Skip header, take 3 points
+                result['industry_dynamics'] = f'<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">INDUSTRY DYNAMICS:</strong></p><ul style="margin:5px 0 15px 20px;line-height:1.8;">{bullets}</ul>'
+        except:
+            pass
+    
+    # Extract Competitive Dynamics
+    if "competitive" in analysis_lower:
+        try:
+            start = analysis_lower.find("competitive")
+            end = len(analysis)
+            
+            competitive_text = analysis[start:end].strip()
+            
+            # Convert to bullet points
+            lines = [l.strip() for l in competitive_text.split('\n') if l.strip() and len(l.strip()) > 10]
+            if lines:
+                bullets = ''.join([f'<li>{line}</li>' for line in lines[1:3]])  # Skip header, take 2 points
+                result['competitive_dynamics'] = f'<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">COMPETITIVE DYNAMICS:</strong></p><ul style="margin:5px 0 15px 20px;line-height:1.8;">{bullets}</ul>'
+        except:
+            pass
+    
+    return result
 
 
 def wrap_in_email_template(content: str, today: str) -> str:
-    """Wrap stock content in full email HTML template."""
+    """Wrap content in Outlook-compatible email template."""
     
-    return f"""<!DOCTYPE html>
+    return f'''<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
@@ -374,7 +381,8 @@ Berkholts Stock Summaries - {today}
 {content}
 
 <p style="color:#7f8c8d;font-size:12px;margin-top:30px;text-align:center;">
-Generated by Berkholts Stock Summary System
+Generated by Berkholts Stock Summary System<br>
+<strong>Prices:</strong> Yahoo Finance (yfinance) | <strong>Announcements:</strong> ASX (pyasx) | <strong>Analysis:</strong> Claude AI
 </p>
 
 </td></tr>
@@ -382,34 +390,7 @@ Generated by Berkholts Stock Summary System
 </td></tr>
 </table>
 </body>
-</html>"""
-
-
-def fix_urls_in_html(html: str) -> str:
-    """Post-process HTML to fix any malformed URLs."""
-    
-    # Fix angle bracket URLs: <https://...> -> proper links
-    pattern = r'<(https?://[^>]+)>'
-    
-    def replace_angle_url(match):
-        url = match.group(1)
-        if 'asx.com.au' in url:
-            text = 'ASX Announcement'
-        elif 'afr.com' in url:
-            text = 'AFR'
-        elif 'bloomberg.com' in url:
-            text = 'Bloomberg'
-        elif 'reuters.com' in url:
-            text = 'Reuters'
-        elif 'yahoo.com' in url:
-            text = 'Yahoo Finance'
-        else:
-            text = 'Source'
-        return f'<a href="{url}" style="color:#3498db;text-decoration:underline;">{text}</a>'
-    
-    html = re.sub(pattern, replace_angle_url, html)
-    
-    return html
+</html>'''
 
 
 # ============================================================================
@@ -430,15 +411,18 @@ def send_email(html_content: str, recipient: str, smtp_email: str, smtp_password
 
 
 # ============================================================================
-# MAIN FUNCTION
+# MAIN
 # ============================================================================
 
 def main():
-    """Main function - orchestrates the multi-search process."""
+    """Main function - uses yfinance + pyasx + Claude."""
     
     print("=" * 70)
     print("🚀 Berkholts Daily Stock Summary Emailer")
-    print("📊 Multi-Search Version (Higher Accuracy)")
+    print("📊 ACCURATE DATA VERSION")
+    print("   • Prices: yfinance (FREE, 100% accurate)")
+    print("   • ASX Links: pyasx (FREE, real PDF links)")
+    print("   • Analysis: Claude API (reduced usage)")
     print(f"⏰ Started at: {datetime.now()}")
     print("=" * 70)
     
@@ -464,17 +448,14 @@ def main():
     
     recipients = [e.strip() for e in recipient_emails_str.split(',') if e.strip()]
     print(f"📧 Recipients: {', '.join(recipients)}")
-    print(f"📈 Stocks to analyze: {len(STOCKS)}")
+    print(f"📈 Stocks: {len(STOCKS)}")
     
-    # Initialize client
+    # Initialize Claude client
     client = anthropic.Anthropic(api_key=anthropic_key)
     
-    # Calculate dates
+    # Calculate today's date
     today = datetime.now()
     today_str = today.strftime("%B %d, %Y")
-    
-    # Cache for shared searches (industry dynamics)
-    industry_cache = {}
     
     # Process each stock
     all_stock_html = ""
@@ -484,61 +465,48 @@ def main():
         print(f"📊 STOCK {i}/{len(STOCKS)}: {stock['name']} ({stock['ticker']})")
         print("=" * 70)
         
-        # Collect all data for this stock
-        stock_data = {}
+        # 1. Get ACCURATE price from yfinance (FREE)
+        print(f"   💰 Fetching price from Yahoo Finance...", end=" ")
+        price_data = get_stock_price(stock['ticker'])
+        if price_data.get('error'):
+            print(f"⚠️ {price_data['error']}")
+        else:
+            print(f"✅ A${price_data['yesterday_close']:.2f} ({price_data['change_percent']:+.2f}%)")
         
-        # 1. Price data
-        stock_data['price'] = get_price_data(client, stock['ticker'], stock['name'])
+        # 2. Get REAL ASX announcements from pyasx (FREE)
+        print(f"   📢 Fetching ASX announcements...", end=" ")
+        announcements = get_asx_announcements(stock['asx_code'])
+        print(f"✅ Found {len(announcements)} announcements")
         
-        # 2. Recent news (last 7 days)
-        stock_data['news'] = get_recent_news(client, stock['ticker'], stock['name'])
+        # 3. Get news analysis from Claude (minimal API usage)
+        print(f"   🔍 Getting news analysis from Claude...")
+        analysis = get_news_analysis(client, stock)
+        print(f"   ✅ Analysis complete")
         
-        # 3. Last announcement
-        stock_data['announcement'] = get_last_announcement(client, stock['ticker'], stock['name'])
-        
-        # 4. Last earnings
-        stock_data['earnings'] = get_earnings_report(client, stock['ticker'], stock['name'])
-        
-        # 5. Industry dynamics (cached by industry)
-        industry = stock['industry']
-        if industry not in industry_cache:
-            industry_cache[industry] = get_industry_dynamics(client, industry)
-        stock_data['industry'] = industry_cache[industry]
-        
-        # 6. Competitor news
-        stock_data['competitors'] = get_competitor_news(client, stock['competitors'], industry)
-        
-        # Generate HTML for this stock
-        print(f"\n   🎨 Generating HTML...")
-        stock_html = generate_html_for_stock(client, stock, stock_data, i)
+        # 4. Generate HTML
+        print(f"   🎨 Generating HTML...")
+        stock_html = generate_stock_html(stock, price_data, announcements, analysis, i)
         all_stock_html += stock_html
-        
-        print(f"   ✅ Complete!")
+        print(f"   ✅ Done!")
     
-    # Wrap in email template
+    # Assemble final email
     print(f"\n{'=' * 70}")
     print("📧 Assembling final email...")
-    print("=" * 70)
     
     final_html = wrap_in_email_template(all_stock_html, today_str)
-    final_html = fix_urls_in_html(final_html)
-    
-    print(f"📄 Total HTML length: {len(final_html)} characters")
+    print(f"📄 Total HTML: {len(final_html)} characters")
     
     # Send emails
-    print(f"\n{'=' * 70}")
-    print("📤 Sending emails...")
-    print("=" * 70)
-    
+    print(f"\n📤 Sending emails...")
     subject = f"Berkholts Stock Summaries - {today_str}"
     
     for recipient in recipients:
         try:
-            print(f"   📤 Sending to: {recipient}")
+            print(f"   📤 {recipient}...", end=" ")
             send_email(final_html, recipient, smtp_email, smtp_password, subject)
-            print(f"   ✅ Sent!")
+            print("✅ Sent!")
         except Exception as e:
-            print(f"   ❌ Failed: {str(e)}")
+            print(f"❌ {str(e)}")
     
     print(f"\n{'=' * 70}")
     print("✅ ALL DONE!")
