@@ -11,7 +11,7 @@ def main():
     """Main function to generate and send daily stock summary"""
     
     print("=" * 60)
-    print(f"🚀 Berkholts Daily Stock Summary Emailer")
+    print(f"🚀 Berkholts Daily Stock Summary Emailer (10 Stocks)")
     print(f"⏰ Started at: {datetime.now()}")
     print("=" * 60)
     
@@ -21,126 +21,128 @@ def main():
     from_email = os.getenv('FROM_EMAIL')
     recipient_emails_str = os.getenv('RECIPIENT_EMAILS')
     
-    # Validate all required variables
     if not all([anthropic_key, sendgrid_key, from_email, recipient_emails_str]):
         print("\n❌ ERROR: Missing required environment variables!")
         sys.exit(1)
     
     recipient_emails = [email.strip() for email in recipient_emails_str.split(',') if email.strip()]
-    
-    if not recipient_emails:
-        print("\n❌ ERROR: No valid email addresses found!")
-        sys.exit(1)
-    
     print(f"✅ Recipients: {len(recipient_emails)}")
     
     # Generate summary
     try:
         print("\n📊 Generating stock summaries...")
-        print("⏱️  This will take 5-8 minutes...")
+        print("⏱️  This will take 3-5 minutes for 10 stocks...")
         
         client = anthropic.Anthropic(api_key=anthropic_key)
         today = datetime.now().strftime("%B %d, %Y")
         
-        prompt = f"""Create an HTML email report for {today} covering these 19 Australian stocks:
+        prompt = f"""Generate a professional HTML email report for {today} with these 10 Australian stocks:
 
-1. AUB Group Limited (AUB.AX)
-2. Mineral Resources Limited (MIN.AX)
-3. Charter Hall Group (CHC.AX)
-4. HUB24 Limited (HUB.AX)
-5. Macquarie Group Limited (MQG.AX)
-6. CSL Limited (CSL.AX)
-7. Dicker Data Limited (DDR.AX)
-8. Hansen Technologies Limited (HSN.AX)
-9. Growthpoint Properties Australia (GOZ.AX)
-10. Propel Funeral Partners Limited (PFP.AX)
-11. Nick Scali Limited (NCK.AX)
-12. Xero Limited (XRO.AX)
-13. Block Inc (SQ2.AX)
-14. Commonwealth Bank of Australia (CBA.AX)
-15. News Corp (NWS.AX)
-16. Sigma Healthcare Limited (SIG.AX)
-17. Supply Network Limited (SNL.AX)
-18. James Hardie Industries plc (JHX.AX)
-19. PEXA Group Limited (PXA.AX)
+1. AUB Group Limited (AUB.AX) - Insurance broker
+2. Mineral Resources Limited (MIN.AX) - Mining and resources
+3. Charter Hall Group (CHC.AX) - Commercial property REIT
+4. HUB24 Limited (HUB.AX) - Wealth management platform
+5. Macquarie Group Limited (MQG.AX) - Investment bank
+6. CSL Limited (CSL.AX) - Biopharmaceutical company
+7. Dicker Data Limited (DDR.AX) - IT distributor
+8. Hansen Technologies Limited (HSN.AX) - Software company
+9. Growthpoint Properties Australia (GOZ.AX) - Industrial property REIT
+10. Propel Funeral Partners Limited (PFP.AX) - Funeral services
 
-SEARCH REQUIREMENTS - YOU MUST:
-- Search for "[company name] [ticker] stock price" for current prices
-- Search for "site:asx.com.au [ticker] announcement" for ASX announcements
-- Search for "[company name] news {today}" for recent developments
-- Find at least one credible source for industry dynamics
+STRUCTURE:
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;padding:20px;background-color:#ffffff;">
 
-FOR EACH STOCK PROVIDE:
+<h1 style="color:#2c3e50;border-bottom:3px solid #3498db;padding-bottom:10px;margin-bottom:30px;">Berkholts Stock Summaries - {today}</h1>
+
+FOR EACH OF THE 10 STOCKS:
+
 <h2 style="color:#34495e;margin-top:40px;border-bottom:2px solid #95a5a6;padding-bottom:8px;">N. Company Name (TICKER)</h2>
 
-<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">PRICE:</strong> A$X.XX | <strong style="color:#2980b9;">YESTERDAY:</strong> <span style="color:#00AA00;font-weight:bold;">+A$X.XX (+X%)</span></p>
+<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">PRICE:</strong> A$XX.XX | <strong style="color:#2980b9;">YESTERDAY:</strong> <span style="color:#00AA00;font-weight:bold;">+A$X.XX (+X.XX%)</span></p>
 
-<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">REASON FOR MOVE:</strong> [Recent news from last 7 days with date, OR "No material company announcements in the past week."]</p>
+<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">REASON FOR MOVE:</strong> [Recent announcement from last 7 days with specific date, OR "No material company announcements in the past week."]</p>
 
 <p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">COMPANY DEVELOPMENTS (Past Week):</strong></p>
 <ul style="line-height:1.8;margin:10px 0;">
-<li><span style="color:#FF8800;font-weight:bold;">[NEW]</span> Development with date - <a href="URL" style="color:#3498db;text-decoration:none;">Source</a></li>
-<li>Or: No new developments reported this week</li>
+<li><span style="color:#FF8800;font-weight:bold;">[NEW]</span> <strong>Date:</strong> Development description - <a href="actual-url" style="color:#3498db;text-decoration:none;">Source Name</a></li>
+<li>OR: No new developments reported this week</li>
 </ul>
 
 <p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">LAST COMPANY ANNOUNCEMENT:</strong></p>
 <ul style="line-height:1.8;margin:10px 0;">
-<li><strong>Date:</strong> [Actual date]</li>
-<li><strong>Summary:</strong> [2-3 sentences with specific numbers]</li>
-<li><strong>Source:</strong> <a href="ACTUAL_ASX_URL" style="color:#3498db;text-decoration:none;">ASX Announcement</a></li>
+<li><strong>Date:</strong> Month Day, Year</li>
+<li><strong>Summary:</strong> 2-3 sentences with specific numbers, guidance, key metrics</li>
+<li><strong>Source:</strong> <a href="https://announcements.asx.com.au/asxpdf/..." style="color:#3498db;text-decoration:none;">ASX Announcement</a></li>
 </ul>
 
 <p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">INDUSTRY/COMPETITIVE DYNAMICS:</strong></p>
 <ul style="line-height:1.8;margin:10px 0;">
-<li><strong>Date:</strong> [Specific data point] - <a href="URL" style="color:#3498db;text-decoration:none;">Source Name</a></li>
+<li><strong>Month Year:</strong> Specific data point with percentages/numbers - <a href="url" style="color:#3498db;text-decoration:none;">Credible Source Name</a></li>
+<li><strong>Month Year:</strong> Another data point with metrics - <a href="url" style="color:#3498db;text-decoration:none;">Source Name</a></li>
+<li><strong>Month Year:</strong> Third data point - <a href="url" style="color:#3498db;text-decoration:none;">Source Name</a></li>
 </ul>
 
 <hr style="border:none;border-top:1px solid #ddd;margin:30px 0;">
 
-CRITICAL FORMATTING RULES:
-1. Start with: <!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;padding:20px;background-color:#ffffff;">
-2. Title: <h1 style="color:#2c3e50;border-bottom:3px solid #3498db;padding-bottom:10px;margin-bottom:30px;">Berkholts Stock Summaries - {today}</h1>
-3. ALL hyperlinks MUST be: <a href="actual-url" style="color:#3498db;text-decoration:none;">Link Text</a>
-4. NEVER write: <https://...> or https://... (raw URLs)
-5. Green for gains: style="color:#00AA00;font-weight:bold;"
-6. Red for losses: style="color:#DD0000;font-weight:bold;"
-7. End with: </body></html>
+[Repeat for all 10 stocks]
 
-QUALITY REQUIREMENTS:
-- You MUST find actual stock prices (search until you find them)
-- You MUST find actual ASX announcements (they exist for all companies)
-- You MUST provide real source URLs (not "data not available")
-- You MUST generate all 19 stocks (no shortcuts)
+</body>
+</html>
 
-If you cannot find data after searching, search again with different terms. Do not give up."""
+SEARCH REQUIREMENTS - YOU MUST SEARCH FOR:
+1. Current stock price: "[company name] [ticker] stock price January 2026"
+2. ASX announcements: "site:asx.com.au [ticker] announcement"
+3. Recent news: "[company name] news January 2026"
+4. Industry data: "[industry] Australia 2025 2026 data"
+
+DO NOT write "data not available" - search multiple times with different terms until you find real data.
+
+LINK FORMATTING RULES:
+✅ CORRECT: <a href="https://actual-url.com" style="color:#3498db;text-decoration:none;">Source Name</a>
+❌ WRONG: <https://url.com>
+❌ WRONG: https://url.com
+NEVER show raw URLs. ALL sources must be proper HTML anchor tags.
+
+COLOR RULES:
+- Gains: <span style="color:#00AA00;font-weight:bold;">+$X.XX (+X%)</span>
+- Losses: <span style="color:#DD0000;font-weight:bold;">-$X.XX (-X%)</span>
+- [NEW] tags: <span style="color:#FF8800;font-weight:bold;">[NEW]</span>
+
+QUALITY STANDARDS:
+- Find actual current prices (not "data not available")
+- Find actual ASX announcements with real URLs
+- Use credible sources: AFR, Bloomberg, Reuters, industry magazines, government data
+- Exclude: Motley Fool, Simply Wall St, TradingView
+- All 10 stocks must be complete with real data
+
+Generate the complete HTML report now."""
 
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=32000,
-            system="""You are an HTML report generator. Rules:
-1. Output ONLY HTML (<!DOCTYPE html> to </html>)
-2. Zero text before or after HTML
-3. All URLs in <a href="URL">text</a> format
-4. Never show raw URLs like <https://...>
-5. Search thoroughly - don't give up if first search fails
-6. All 19 stocks required - no exceptions""",
+            system="You generate HTML reports. Output ONLY HTML from <!DOCTYPE html> to </html>. No explanations. No disclaimers. No text outside HTML. All URLs must be in <a href> tags, never raw. Search thoroughly until you find real data for all 10 stocks.",
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}]
         )
         
-        # Extract and clean HTML
+        # Extract HTML
         html_content = ""
         for block in message.content:
             if block.type == "text":
                 html_content += block.text
         
-        # Remove any text before/after HTML tags
+        # Clean: remove any text before <!DOCTYPE or <html> and after </html>
         html_match = re.search(r'(<!DOCTYPE[^>]*>)?\s*<html.*?</html>', html_content, re.DOTALL | re.IGNORECASE)
         if html_match:
             html_content = html_match.group(0)
         else:
-            # Wrap if needed
-            html_content = f'<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;padding:20px;">{html_content}</body></html>'
+            # Fallback: wrap content
+            body_match = re.search(r'<h1.*$', html_content, re.DOTALL | re.IGNORECASE)
+            if body_match:
+                html_content = f'<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;padding:20px;background-color:#ffffff;">{body_match.group(0)}</body></html>'
         
         print(f"✅ Generated {len(html_content)} characters")
         
@@ -167,12 +169,12 @@ If you cannot find data after searching, search again with different terms. Do n
             
             try:
                 response = sg.client.mail.send.post(request_body=mail.get())
-                print(f"   ✅ Sent! Status: {response.status_code}")
+                print(f"   ✅ Status: {response.status_code}")
             except Exception as e:
                 print(f"   ❌ Failed: {str(e)}")
         
-        print("\n✅ ALL EMAILS SENT!")
-        print(f"⏰ Completed at: {datetime.now()}")
+        print("\n✅ COMPLETE!")
+        print(f"⏰ Finished: {datetime.now()}")
         
     except Exception as e:
         print(f"\n❌ ERROR: {str(e)}")
