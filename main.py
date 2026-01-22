@@ -47,13 +47,15 @@ Today's date is {today}. The "last 7 days" means from January 15, 2026 to Januar
 For each company, YOU MUST find and provide ALL of the following:
 
 **YESTERDAY'S PRICE MOVEMENT**
-Search for historical stock price data to find:
-1. YESTERDAY'S closing price (January 21, 2026)
-2. The DAY BEFORE YESTERDAY'S closing price (January 20, 2026)
-3. Calculate percentage change: ((Yesterday - Day Before) / Day Before) × 100
+CRITICAL: Get accurate price data from Yahoo Finance
+Search for: "site:finance.yahoo.com [ticker] history" OR navigate to https://au.finance.yahoo.com/quote/AUB.AX/history/
+Find the ACTUAL historical prices:
+1. YESTERDAY'S closing price (January 21, 2026) - use "Close" column
+2. The DAY BEFORE YESTERDAY'S closing price (January 20, 2026) - use "Close" column
+3. Calculate percentage change: ((Jan 21 Close - Jan 20 Close) / Jan 20 Close) × 100
 Format: YESTERDAY: A$XX.XX | PREVIOUS DAY: A$YY.YY | CHANGE: +/-X.XX%
-Example: YESTERDAY: A$31.10 | PREVIOUS DAY: A$37.25 | CHANGE: -16.51%
-This shows how the stock moved on the most recent trading day
+Example from actual Yahoo data: YESTERDAY: A$33.47 | PREVIOUS DAY: A$33.95 | CHANGE: -1.41%
+VERIFY your numbers match Yahoo Finance historical data exactly
 
 **REASON FOR MOVE (Last 7 days only)**
 CRITICAL: ONLY include news from the LAST 7 DAYS (from {today} backwards)
@@ -69,10 +71,18 @@ If nothing: "No new developments reported this week" (do NOT say "limited develo
 **LAST COMPANY ANNOUNCEMENT**
 Search: site:asx.com.au [ticker] announcement
 Find most recent price-sensitive announcement with date, summary, and DIRECT ASX.com.au URL
+⚠️ CRITICAL: The ASX URL must be a direct link to the actual PDF announcement
+Format: https://announcements.asx.com.au/asxpdf/YYYYMMDD/pdf/XXXXXXXXX.pdf
+Verify the URL actually exists and points to a real announcement
+Do NOT make up ASX announcement URLs
 
 **LAST EARNINGS REPORT** ⚠️ MANDATORY
 Search: site:asx.com.au [ticker] "results" OR "trading update"
 Find the last financial report with date, type, metrics, and DIRECT ASX.com.au URL
+⚠️ CRITICAL: The ASX URL must be a direct link to the actual PDF announcement
+Format: https://announcements.asx.com.au/asxpdf/YYYYMMDD/pdf/XXXXXXXXX.pdf
+Verify the URL actually exists and points to a real announcement
+Do NOT make up ASX announcement URLs
 
 **INDUSTRY DYNAMICS (Last month)**
 Find EXACTLY 3 data points with:
@@ -81,6 +91,7 @@ Find EXACTLY 3 data points with:
 - HYPERLINKED sources from: WSJ, FT, AFR, Bloomberg, Reuters, trade magazines, government data
 CRITICAL: EVERY point MUST have a hyperlinked source URL
 Focus on: market trends, regulatory changes, economic factors affecting the industry
+⚠️ VERIFY EVERY URL WORKS - do not provide broken or fake URLs
 
 **COMPETITIVE DYNAMICS**
 Find 2 bullet points on recent, fundamental news about competitors (if relevant):
@@ -88,6 +99,15 @@ Find 2 bullet points on recent, fundamental news about competitors (if relevant)
 - Each with specific date and HYPERLINKED source
 - Only include if there is relevant, material competitor news in the last month
 - If no relevant competitor news: "No material competitor developments to report"
+⚠️ VERIFY EVERY URL WORKS - do not provide broken or fake URLs
+
+CRITICAL REQUIREMENT FOR ALL SECTIONS:
+⚠️⚠️⚠️ EVERY HYPERLINK MUST BE A REAL, WORKING URL ⚠️⚠️⚠️
+- Test each URL to ensure it leads to an actual webpage or PDF
+- Do NOT make up URLs
+- Do NOT provide placeholder URLs
+- If you cannot find a working source URL, do not include that data point
+- Better to have fewer points with working links than many points with broken links
 
 CRITICAL: Provide DIRECT URLs to original sources (not search result URLs)."""
 
@@ -213,15 +233,19 @@ Create HTML with this structure:
 CRITICAL:
 - Use DIRECT URLs from research (no tracking, no redirects)
 - Price format: YESTERDAY: A$XX.XX | PREVIOUS DAY: A$YY.YY | CHANGE: +/-X.XX%
-- Yesterday = Jan 21, 2026 closing price
-- Previous Day = Jan 20, 2026 closing price
+- Yesterday = Jan 21, 2026 closing price from Yahoo Finance
+- Previous Day = Jan 20, 2026 closing price from Yahoo Finance
 - Green for positive change: style="color:#00AA00;font-weight:bold;"
 - Red for negative change: style="color:#DD0000;font-weight:bold;"
 - ALL hyperlinks MUST be proper <a href="URL" style="color:#3498db;text-decoration:underline;">Source Name</a>
 - NEVER use raw URLs like https://... or <https://...>
+- ⚠️⚠️⚠️ EVERY HYPERLINK MUST WORK - Only use real URLs from the research data ⚠️⚠️⚠️
+- Do NOT make up URLs
+- Do NOT use placeholder URLs
+- If research doesn't have a working URL for something, omit that data point
 - Start with <!DOCTYPE html>, end with </html>
 - No text before or after HTML
-- REASON FOR MOVE: Only include news from last 7 days (after January 15, 2026). If no recent news, write "No material company announcements in the past week""""
+- REASON FOR MOVE: Only include news from last 7 days (after January 15, 2026). If no recent news, write "No material company announcements in the past week"."""
 
         message2 = client.messages.create(
             model="claude-sonnet-4-20250514",
