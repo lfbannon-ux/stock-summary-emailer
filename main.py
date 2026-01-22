@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """
-Berkholts Daily Stock Summary Emailer - TWO-STEP VERSION
-==========================================================
-Based on the 7:50pm version that actually worked.
-
-The key insight: Claude needs to do research FIRST in one call,
-then format the results into HTML in a SECOND call.
-
-When we combine research + formatting in one prompt, Claude
-either skips the research or produces generic filler.
+Berkholts Daily Stock Summary Emailer - EXPLICIT WEB SEARCH VERSION
+=====================================================================
+Key insight: Claude decides whether to use web search.
+This version explicitly requests web search in the prompt.
 """
 
 import os
@@ -21,10 +16,6 @@ from datetime import datetime, timedelta
 import anthropic
 import yfinance as yf
 
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 
 STOCKS = [
     {
@@ -43,10 +34,6 @@ STOCKS = [
     },
 ]
 
-
-# ============================================================================
-# PRICE DATA - yfinance (FREE & ACCURATE)
-# ============================================================================
 
 def get_stock_price(ticker: str) -> dict:
     """Get accurate stock price from Yahoo Finance."""
@@ -75,259 +62,136 @@ def get_stock_price(ticker: str) -> dict:
         return {"error": str(e)}
 
 
-# ============================================================================
-# STEP 1: RESEARCH - Claude searches and collects raw data
-# ============================================================================
-
-def research_stock(client: anthropic.Anthropic, stock: dict, today_str: str) -> str:
+def research_and_format_stock(client: anthropic.Anthropic, stock: dict, price_data: dict, stock_num: int, today_str: str) -> str:
     """
-    STEP 1: Research a stock using web search.
-    This call ONLY does research - no HTML formatting.
-    Returns raw research data as text.
+    Single API call that does both research AND formatting.
+    Uses very explicit instructions to trigger web search.
     """
     
-    prompt = f"""You are a financial research analyst. Today is {today_str}.
-
-Research {stock['name']} (ASX: {stock['asx_code']}, Yahoo: {stock['ticker']}) and report your findings.
-
-SEARCH AND REPORT ON:
-
-1. RECENT NEWS (Last 7 days)
-   Search: "{stock['name']} news January 2026"
-   - Any material announcements or news?
-   - Report with dates and source URLs
-   - If nothing found, write "NO RECENT NEWS FOUND"
-
-2. LAST ASX ANNOUNCEMENT
-   Search: "site:asx.com.au {stock['asx_code']} announcement"
-   Search: "{stock['name']} ASX announcement 2025"
-   - Find the most recent price-sensitive announcement
-   - Report: Date, Type, Summary with SPECIFIC NUMBERS
-   - Include the actual URL if you find it
-   - Real URLs look like: https://announcements.asx.com.au/asxpdf/YYYYMMDD/pdf/XXXXX.pdf
-
-3. LAST EARNINGS RESULTS
-   Search: "{stock['name']} annual results 2025" OR "{stock['name']} half year results"
-   - Date of announcement
-   - Revenue (with % growth)
-   - NPAT/Profit (with % growth)
-   - EPS
-   - Dividend
-   - Source URL
-
-4. INDUSTRY NEWS ({stock['industry']} sector)
-   Search: "Australian {stock['industry']} industry 2026 statistics"
-   - Find 3 specific data points with numbers
-   - Include dates and source URLs
-
-5. COMPETITOR NEWS
-   Search: "{stock['competitors'][0]} ASX announcement 2026"
-   Search: "{stock['competitors'][1]} ASX results"
-   - Find specific news about these named competitors
-   - Include dates and source URLs
-
-FORMAT YOUR RESPONSE AS RAW DATA:
-==================================
-STOCK: {stock['name']}
-
-RECENT_NEWS:
-[your findings or "NO RECENT NEWS FOUND"]
-
-LAST_ANNOUNCEMENT:
-Date: [date]
-Type: [type]
-Summary: [summary with numbers]
-URL: [actual URL or "NOT FOUND"]
-
-EARNINGS:
-Date: [date]
-Type: [Annual/Half-Year]
-Revenue: [amount and growth]
-NPAT: [amount and growth]
-EPS: [amount]
-Dividend: [amount]
-URL: [URL or "NOT FOUND"]
-
-INDUSTRY_DYNAMICS:
-1. [date]: [fact with numbers] - Source: [name] URL: [url]
-2. [date]: [fact with numbers] - Source: [name] URL: [url]
-3. [date]: [fact with numbers] - Source: [name] URL: [url]
-
-COMPETITOR_NEWS:
-1. [competitor name]: [date] - [news] - URL: [url]
-2. [competitor name]: [date] - [news] - URL: [url]
-==================================
-
-IMPORTANT: Use web search to find REAL information. Do not make up data."""
-
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        result = ""
-        for block in response.content:
-            if hasattr(block, 'text'):
-                result += block.text
-        
-        return result
-    
-    except Exception as e:
-        return f"RESEARCH ERROR: {str(e)}"
-
-
-# ============================================================================
-# STEP 2: FORMAT - Convert research into HTML
-# ============================================================================
-
-def format_to_html(client: anthropic.Anthropic, stock: dict, price_data: dict, research: str, stock_num: int) -> str:
-    """
-    STEP 2: Format the research data into HTML.
-    This call ONLY formats - no web searching.
-    """
-    
-    # Build price HTML (from yfinance - accurate)
+    # Build price HTML first (from yfinance - accurate)
     if price_data.get('error'):
-        price_html = f'<p style="color:red;">Price unavailable: {price_data["error"]}</p>'
+        price_section = f"Price data unavailable: {price_data['error']}"
     else:
         change_color = "#27ae60" if price_data['change_percent'] >= 0 else "#e74c3c"
         change_sign = "+" if price_data['change_percent'] >= 0 else ""
-        price_html = f'''<p style="margin:10px 0;line-height:1.6;">
-<strong style="color:#2980b9;">YESTERDAY ({price_data['yesterday_date']}):</strong> A${price_data['yesterday_close']:.2f} | 
-<strong style="color:#2980b9;">PREVIOUS ({price_data['previous_date']}):</strong> A${price_data['previous_close']:.2f} | 
-<strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};font-weight:bold;">{change_sign}{price_data['change_percent']:.2f}%</span>
-</p>'''
+        price_section = f"""YESTERDAY ({price_data['yesterday_date']}): A${price_data['yesterday_close']:.2f}
+PREVIOUS ({price_data['previous_date']}): A${price_data['previous_close']:.2f}
+CHANGE: {change_sign}{price_data['change_percent']:.2f}%"""
 
-    # Fallback URL for when no real URL is found
     fallback_url = f"https://www.asx.com.au/markets/company/{stock['asx_code']}"
     
-    prompt = f"""Convert this research into HTML for an email. Output ONLY HTML code.
+    prompt = f"""I need you to research {stock['name']} (ASX: {stock['asx_code']}) using web search and then create an HTML email section.
 
-RESEARCH DATA:
-{research}
+IMPORTANT: You MUST use web search for this task. Search the web NOW.
 
-FALLBACK URL (use when URL says "NOT FOUND"): {fallback_url}
+STEP 1 - SEARCH THE WEB FOR EACH OF THESE:
+Search 1: "{stock['name']} ASX announcement December 2025 January 2026"
+Search 2: "{stock['name']} earnings results FY25 revenue profit"
+Search 3: "Australian {stock['industry']} industry trends 2025 2026"
+Search 4: "{stock['competitors'][0]} ASX announcement 2026"
 
-Generate HTML using this EXACT structure:
+STEP 2 - CREATE HTML OUTPUT:
+After searching, create an HTML section with the information you found.
+
+PRICE DATA (already provided - do not search for this):
+{price_section}
+
+Create HTML output with this exact structure:
+
+<h2 style="color:#34495e;margin-top:30px;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
+{stock_num}. {stock['name']} ({stock['ticker']})
+</h2>
+
+<p style="margin:10px 0;line-height:1.6;">
+<strong style="color:#2980b9;">YESTERDAY ({price_data.get('yesterday_date', 'N/A')}):</strong> A${price_data.get('yesterday_close', 'N/A')} | 
+<strong style="color:#2980b9;">PREVIOUS ({price_data.get('previous_date', 'N/A')}):</strong> A${price_data.get('previous_close', 'N/A')} | 
+<strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};">{change_sign}{price_data.get('change_percent', 0):.2f}%</span>
+</p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">REASON FOR MOVE:</strong><br>
-[Use RECENT_NEWS section. If "NO RECENT NEWS FOUND", write "No material announcements in the past week"]
+[What you found from Search 1 - any recent news. If nothing found, write "No material announcements in the past week"]
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">LAST PRICE-SENSITIVE ANNOUNCEMENT:</strong><br>
-<strong>Date:</strong> [from LAST_ANNOUNCEMENT]<br>
-<strong>Type:</strong> [from LAST_ANNOUNCEMENT]<br>
-<strong>Summary:</strong> [from LAST_ANNOUNCEMENT - keep specific numbers]<br>
-<strong>Source:</strong> <a href="[URL from research, or fallback URL]" style="color:#3498db;text-decoration:underline;">ASX Announcement</a>
+<strong>Date:</strong> [from search]<br>
+<strong>Type:</strong> [from search]<br>
+<strong>Summary:</strong> [from search - include numbers]<br>
+<strong>Source:</strong> <a href="[URL from search or {fallback_url}]" style="color:#3498db;">ASX Announcement</a>
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong><br>
-<strong>Date:</strong> [date] | <strong>Type:</strong> [type]<br>
-<strong>Revenue:</strong> [revenue] | <strong>NPAT:</strong> [npat] | <strong>EPS:</strong> [eps] | <strong>Dividend:</strong> [div]<br>
-<strong>Source:</strong> <a href="[URL or fallback]" style="color:#3498db;text-decoration:underline;">ASX Announcement</a>
+[Date, revenue, profit, EPS, dividend from Search 2]<br>
+<strong>Source:</strong> <a href="[URL or {fallback_url}]" style="color:#3498db;">ASX Announcement</a>
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">INDUSTRY DYNAMICS:</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
-[3 list items from INDUSTRY_DYNAMICS, each with <a href="URL">Source</a>]
+<li>[Point 1 from Search 3 with <a href="URL" style="color:#3498db;">Source</a>]</li>
+<li>[Point 2 with source]</li>
+<li>[Point 3 with source]</li>
 </ul>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">COMPETITIVE DYNAMICS:</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
-[2 list items from COMPETITOR_NEWS, each with <a href="URL">Source</a>]
+<li>[Competitor news from Search 4 with <a href="URL" style="color:#3498db;">Source</a>]</li>
+<li>[Another competitor point]</li>
 </ul>
 
-RULES:
-1. All URLs in <a href="URL"> format
-2. Keep all specific numbers from the research
-3. If data is missing, use the fallback URL
-4. Output ONLY HTML - no explanations"""
+<hr style="border:none;border-top:1px solid #ecf0f1;margin:30px 0;">
+
+Output ONLY the HTML code, nothing else. Use real URLs from your search results."""
 
     try:
+        print(f"      Calling Claude API with web_search tool...")
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=3000,
-            system="You are an HTML formatter. Convert the research data into clean HTML. Output ONLY HTML code, nothing else.",
+            max_tokens=4000,
+            tools=[{
+                "type": "web_search_20250305", 
+                "name": "web_search",
+                "max_uses": 10  # Allow multiple searches
+            }],
             messages=[{"role": "user", "content": prompt}]
         )
         
-        analysis_html = ""
-        for block in response.content:
-            if hasattr(block, 'text'):
-                analysis_html += block.text
+        # Log what type of response we got
+        print(f"      Response stop_reason: {response.stop_reason}")
+        print(f"      Response content blocks: {len(response.content)}")
         
+        # Extract the text content
+        result = ""
+        for block in response.content:
+            block_type = getattr(block, 'type', 'unknown')
+            print(f"      Block type: {block_type}")
+            if hasattr(block, 'text'):
+                result += block.text
+        
+        if not result:
+            print("      ⚠️ No text content in response!")
+            return f"<h2>{stock['name']} - No content generated</h2><hr>"
+        
+        return result
+    
     except Exception as e:
-        analysis_html = f"<p style='color:red;'>Formatting error: {str(e)}</p>"
-    
-    # Combine header + price + formatted analysis
-    return f'''
-<h2 style="color:#34495e;margin-top:30px;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
-{stock_num}. {stock['name']} ({stock['ticker']})
-</h2>
+        print(f"      ❌ API Error: {str(e)}")
+        return f"<h2>{stock['name']} - Error: {str(e)}</h2><hr>"
 
-{price_html}
-
-{analysis_html}
-
-<hr style="border:none;border-top:1px solid #ecf0f1;margin:30px 0;">
-'''
-
-
-# ============================================================================
-# URL VALIDATION
-# ============================================================================
-
-def validate_asx_url(url: str) -> bool:
-    """Check if an ASX PDF URL exists."""
-    if not url or 'asx.com.au' not in url or '.pdf' not in url:
-        return False
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        response = requests.head(url, headers=headers, timeout=10, allow_redirects=True)
-        return response.status_code == 200
-    except:
-        return False
-
-
-def validate_urls_in_html(html: str, asx_code: str) -> str:
-    """Validate ASX PDF URLs and replace broken ones."""
-    fallback = f"https://www.asx.com.au/markets/company/{asx_code}"
-    
-    pattern = r'href="(https://[^"]*\.pdf)"'
-    
-    def check_and_replace(match):
-        url = match.group(1)
-        if 'asx.com.au' in url and not validate_asx_url(url):
-            print(f"      ⚠️ Broken URL: {url[:50]}... → Using fallback")
-            return f'href="{fallback}"'
-        return match.group(0)
-    
-    return re.sub(pattern, check_and_replace, html)
-
-
-# ============================================================================
-# EMAIL TEMPLATE
-# ============================================================================
 
 def wrap_in_template(content: str, today: str) -> str:
-    """Wrap in Outlook-compatible HTML template."""
+    """Wrap in email template."""
     return f'''<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body style="font-family:Arial,Helvetica,sans-serif;margin:0;padding:0;background-color:#f4f4f4;">
+<body style="font-family:Arial,sans-serif;margin:0;padding:0;background-color:#f4f4f4;">
 <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f4;">
 <tr><td align="center" style="padding:20px;">
 <table width="1000" cellpadding="20" cellspacing="0" style="background-color:#ffffff;border:1px solid #dddddd;">
@@ -341,7 +205,7 @@ Berkholts Stock Summaries - {today}
 
 <p style="color:#7f8c8d;font-size:12px;margin-top:30px;text-align:center;">
 Generated by Berkholts Stock Summary System<br>
-Prices: Yahoo Finance | Analysis: Claude AI
+Prices: Yahoo Finance | Analysis: Claude AI with Web Search
 </p>
 
 </td></tr>
@@ -353,7 +217,7 @@ Prices: Yahoo Finance | Analysis: Claude AI
 
 
 def send_email(html: str, recipient: str, smtp_email: str, smtp_password: str, subject: str):
-    """Send HTML email via Gmail SMTP."""
+    """Send email."""
     msg = MIMEText(html, 'html', 'utf-8')
     msg['Subject'] = subject
     msg['From'] = smtp_email
@@ -364,14 +228,9 @@ def send_email(html: str, recipient: str, smtp_email: str, smtp_password: str, s
         server.sendmail(smtp_email, recipient, msg.as_string())
 
 
-# ============================================================================
-# MAIN
-# ============================================================================
-
 def main():
     print("=" * 70)
-    print("🚀 Berkholts Daily Stock Summary Emailer")
-    print("📊 TWO-STEP VERSION: Research first, then format")
+    print("🚀 Berkholts Stock Emailer - EXPLICIT WEB SEARCH VERSION")
     print(f"⏰ Started: {datetime.now()}")
     print("=" * 70)
     
@@ -404,29 +263,19 @@ def main():
         print(f"📊 STOCK {i}/{len(STOCKS)}: {stock['name']}")
         print("=" * 70)
         
-        # Get price (yfinance - accurate)
-        print("   💰 Getting price from Yahoo Finance...", end=" ")
+        # Get price (yfinance)
+        print("   💰 Getting price...", end=" ")
         price = get_stock_price(stock['ticker'])
         if price.get('error'):
             print(f"⚠️ {price['error']}")
         else:
             print(f"✅ A${price['yesterday_close']:.2f} ({price['change_percent']:+.2f}%)")
         
-        # STEP 1: Research
-        print("   🔍 STEP 1: Researching (web search)...")
-        research = research_stock(client, stock, today_str)
-        print(f"      Research length: {len(research)} chars")
-        
-        # STEP 2: Format
-        print("   🎨 STEP 2: Formatting to HTML...")
-        stock_html = format_to_html(client, stock, price, research, i)
-        
-        # Validate URLs
-        print("   🔗 Validating URLs...")
-        stock_html = validate_urls_in_html(stock_html, stock['asx_code'])
-        
+        # Research and format in one call
+        print("   🔍 Researching and formatting...")
+        stock_html = research_and_format_stock(client, stock, price, i, today_str)
         all_html += stock_html
-        print("   ✅ Complete!")
+        print("   ✅ Done!")
     
     # Final assembly
     print(f"\n📧 Assembling email...")
