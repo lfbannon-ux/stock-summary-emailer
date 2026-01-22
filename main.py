@@ -68,7 +68,7 @@ def main():
     try:
         print("\n" + "=" * 60)
         print("📊 Generating stock summaries with Claude API...")
-        print("⏱️  This will take 3-5 minutes...")
+        print("⏱️  This will take 5-8 minutes for all 19 stocks...")
         print("=" * 60)
         
         client = anthropic.Anthropic(api_key=anthropic_key)
@@ -176,11 +176,11 @@ FORMAT AS PROFESSIONAL HTML EMAIL:
 - All sources must be clickable hyperlinks
 - Professional styling suitable for email viewing
 
-Output the complete HTML report."""
+Generate the complete report with ALL 19 stocks. Do not abbreviate or skip any stocks."""
 
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=16000,
+            max_tokens=32000,
             system="You are an HTML report generator. You ONLY output valid HTML. Never explain your process, never describe what you're doing, never mention search results. Your entire response must be pure HTML starting with <html> and ending with </html>. No preambles, no explanations, no meta-commentary.",
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}]
