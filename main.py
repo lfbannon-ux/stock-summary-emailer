@@ -37,6 +37,30 @@ STOCKS = [
         "competitors": ["Pilbara Minerals (PLS.AX)", "Fortescue Metals (FMG.AX)"],
         "asx_url": "https://www.asx.com.au/markets/company/MIN"
     },
+    {
+        "name": "HUB24 Limited",
+        "ticker": "HUB.AX",
+        "asx_code": "HUB",
+        "industry": "wealth management platforms",
+        "competitors": ["Netwealth Group (NWL.AX)", "Praemium Limited (PPS.AX)"],
+        "asx_url": "https://www.asx.com.au/markets/company/HUB"
+    },
+    {
+        "name": "Macquarie Group Limited",
+        "ticker": "MQG.AX",
+        "asx_code": "MQG",
+        "industry": "investment banking and financial services",
+        "competitors": ["ANZ Group (ANZ.AX)", "Commonwealth Bank (CBA.AX)"],
+        "asx_url": "https://www.asx.com.au/markets/company/MQG"
+    },
+    {
+        "name": "Charter Hall Group",
+        "ticker": "CHC.AX",
+        "asx_code": "CHC",
+        "industry": "real estate investment and funds management",
+        "competitors": ["Goodman Group (GMG.AX)", "Dexus (DXS.AX)"],
+        "asx_url": "https://www.asx.com.au/markets/company/CHC"
+    },
 ]
 
 
