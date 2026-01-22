@@ -178,7 +178,7 @@ FORMAT AS PROFESSIONAL HTML EMAIL:
 - All sources must be clickable hyperlinks
 - Professional styling suitable for email viewing
 
-Begin generating the HTML report NOW.
+Begin generating the HTML report NOW."""
 
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
