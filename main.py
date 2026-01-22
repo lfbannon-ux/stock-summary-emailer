@@ -5,6 +5,7 @@ import sendgrid
 from sendgrid.helpers.mail import Mail, Email, To, Content
 from datetime import datetime
 import anthropic
+import re
 
 def main():
     """Main function to generate and send daily stock summary"""
@@ -74,125 +75,62 @@ def main():
         client = anthropic.Anthropic(api_key=anthropic_key)
         today = datetime.now().strftime("%B %d, %Y")
         
-        prompt = f"""Generate a comprehensive daily stock summary report for {today} for these 19 Australian stocks:
+        prompt = f"""Generate a professional HTML email report with stock summaries for {today}.
 
-1. AUB Group Limited (AUB.AX) - Australian insurance broker
-2. Mineral Resources Limited (MIN.AX) - Mining and resources
+STOCKS TO COVER (all 19):
+1. AUB Group Limited (AUB.AX) - Insurance broker
+2. Mineral Resources Limited (MIN.AX) - Mining
 3. Charter Hall Group (CHC.AX) - Commercial property REIT
-4. HUB24 Limited (HUB.AX) - Wealth management platform
+4. HUB24 Limited (HUB.AX) - Wealth platform
 5. Macquarie Group Limited (MQG.AX) - Investment bank
-6. CSL Limited (CSL.AX) - Biopharmaceutical company
+6. CSL Limited (CSL.AX) - Biopharmaceutical
 7. Dicker Data Limited (DDR.AX) - IT distributor
-8. Hansen Technologies Limited (HSN.AX) - Software company
-9. Growthpoint Properties Australia (GOZ.AX) - Industrial property REIT
+8. Hansen Technologies Limited (HSN.AX) - Software
+9. Growthpoint Properties Australia (GOZ.AX) - Industrial REIT
 10. Propel Funeral Partners Limited (PFP.AX) - Funeral services
 11. Nick Scali Limited (NCK.AX) - Furniture retailer
-12. Xero Limited (XRO.AX) - Cloud accounting software
-13. Block Inc (SQ2.AX) - Digital payments (Square)
-14. Commonwealth Bank of Australia (CBA.AX) - Major bank
-15. News Corp (NWS.AX) - Media conglomerate
-16. Sigma Healthcare Limited (SIG.AX) - Pharmacy and healthcare
-17. Supply Network Limited (SNL.AX) - Logistics and supply chain
+12. Xero Limited (XRO.AX) - Cloud accounting
+13. Block Inc (SQ2.AX) - Digital payments
+14. Commonwealth Bank of Australia (CBA.AX) - Bank
+15. News Corp (NWS.AX) - Media
+16. Sigma Healthcare Limited (SIG.AX) - Pharmacy
+17. Supply Network Limited (SNL.AX) - Logistics
 18. James Hardie Industries plc (JHX.AX) - Building materials
-19. PEXA Group Limited (PXA.AX) - Property exchange platform
+19. PEXA Group Limited (PXA.AX) - Property platform
 
-For EACH stock, provide the following sections:
+FOR EACH STOCK INCLUDE:
+- PRICE: [current] | YESTERDAY: [change with color]
+- REASON FOR MOVE: Recent news (last 7 days) or "No material announcements"
+- COMPANY DEVELOPMENTS: List with [NEW] tags
+- LAST COMPANY ANNOUNCEMENT: Date, summary, ASX link
+- INDUSTRY/COMPETITIVE DYNAMICS: 3 points with data and sources
 
-**PRICE:** [Current price] | **YESTERDAY:** [Change and %]
+FORMAT REQUIREMENTS:
+- Start with: <!DOCTYPE html><html><head><meta charset="UTF-8"></head><body style="font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px;">
+- Title: <h1 style="color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px;">Berkholts Stock Summaries - {today}</h1>
+- Each stock: <h2 style="color: #34495e; margin-top: 40px; border-bottom: 2px solid #95a5a6; padding-bottom: 8px;">N. Company Name (TICKER)</h2>
+- Sections: <p style="line-height: 1.6; margin: 10px 0;"><strong style="color: #2980b9;">SECTION:</strong> content</p>
+- Lists: <ul style="line-height: 1.8; margin: 10px 0;"><li>item</li></ul>
+- Green for gains: <span style="color: #00AA00; font-weight: bold;">+$X.XX (+X.XX%)</span>
+- Red for losses: <span style="color: #DD0000; font-weight: bold;">-$X.XX (-X.XX%)</span>
+- Orange for NEW: <span style="color: #FF8800; font-weight: bold;">[NEW]</span>
+- Links: <a href="URL" style="color: #3498db; text-decoration: none;">Source Name</a>
+- Separator: <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
+- End with: </body></html>
 
-**REASON FOR MOVE:** 
-- ONLY include NEW fundamental information from the last 7 days
-- Must be timestamped with specific date
-- Preferably from company ASX announcements or major credible news
-- If no material news in last 7 days, state "No material company announcements in the past week" and note broader market factors if relevant
-- Exclude technical analysis unless materially significant
+LINK FORMATTING (CRITICAL):
+✅ CORRECT: <a href="https://announcements.asx.com.au/asxpdf/20251201/pdf/abc.pdf" style="color: #3498db; text-decoration: none;">ASX Announcement</a>
+❌ WRONG: <https://announcements.asx.com.au/...>
+❌ WRONG: https://announcements.asx.com.au/...
 
-**COMPANY DEVELOPMENTS (Past Week):**
-- Tag any NEW developments with [NEW]
-- ONLY include developments from the last 7 days
-- Focus on: earnings, guidance changes, major contracts, acquisitions, management changes
-- Include dates and hyperlinked sources
-- If nothing in past week, state "No new developments reported this week"
+Never show raw URLs. Always use <a href="URL">descriptive text</a>.
 
-**LAST COMPANY ANNOUNCEMENT:**
-This is a CRITICAL section - you must search thoroughly for this information:
-- **Date:** [Date of most recent material ASX announcement]
-- **Summary:** [Detailed 2-3 sentence summary of what was announced, with specific numbers and guidance if applicable]
-- **Source:** [Hyperlinked ASX announcement URL]
-
-SEARCH STRATEGY FOR FINDING LAST ANNOUNCEMENT:
-1. Search: "site:asx.com.au [ticker] announcement 2025 2026"
-2. Search: "[Company name] ASX guidance update 2025"
-3. Search: "[Company name] trading update"
-4. Look for announcements containing: guidance, outlook, earnings, trading update, AGM
-5. Prioritize the MOST RECENT material announcement (not just price-sensitive)
-6. Common announcement types to look for: quarterly updates, AGM addresses, guidance updates, results
-
-**INDUSTRY/COMPETITIVE DYNAMICS (3 key points):**
-Each point MUST include:
-- Specific DATE (month and year minimum)
-- HARD DATA (percentages, dollar values, volumes, growth rates)
-- HYPERLINKED credible SOURCE
-
-SOURCE QUALITY REQUIREMENTS:
-✅ PRIORITIZE THESE SOURCES:
-- Industry trade magazines and journals
-- Major credible news outlets (AFR, Bloomberg, Reuters, Financial Times)
-- Government/regulatory data (ABS, RBA, ASIC, industry regulators)
-- Industry associations and research firms (Gartner, IDC, JLL, CBRE, etc.)
-- Company financial reports and industry reports
-- Specialist financial research firms
-
-❌ EXCLUDE THESE SOURCES:
-- Motley Fool
-- Simply Wall St
-- TradingView
-- DailyForex
-- Property listing sites (Domain, realestate.com.au) unless citing hard data
-- General investment advice websites
-- Retail investor forums
-
-Focus on information that materially affects: volumes, pricing, customer behavior, margins, competitive position, regulatory changes, industry structure
-
-CRITICAL REQUIREMENTS FOR ALL SECTIONS:
-- Output ONLY the HTML report - no preambles, explanations, or apologies about data limitations
-- Use web search extensively to find current prices, recent ASX announcements, and credible industry news
-- ALL sources must be HYPERLINKED using proper HTML anchor tags with descriptive text
-- NEVER display raw URLs - always hide them inside anchor tags with readable link text
-- Example: <a href="URL" style="color: #3498db;">Australian Financial Review - January 22, 2026</a>
-- All dates must be specific (not "recently" or "last week")
-- Focus on business fundamentals, not technical chart analysis
-- Maintain consistent professional tone throughout
-- If you cannot find recent news for a stock, state "No material company announcements in the past week" - do NOT apologize or explain data limitations
-
-FORMAT AS PROFESSIONAL HTML EMAIL:
-- Begin IMMEDIATELY with: <h1 style="color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px;">Berkholts Stock Summaries - {today}</h1>
-- NO text or content above this heading
-- NO preambles about data limitations or real-time access
-- Use <h2 style="color: #34495e; margin-top: 30px; border-bottom: 2px solid #95a5a6; padding-bottom: 8px;"> for each stock name and ticker
-- Use <strong style="color: #2980b9;"> for section headers (PRICE, REASON FOR MOVE, etc.)
-- Use <span style="color: #00AA00; font-weight: bold;"> for positive price moves
-- Use <span style="color: #DD0000; font-weight: bold;"> for negative price moves  
-- Use <span style="color: #FF8800; font-weight: bold;">[NEW]</span> for new tags
-- Use <p style="line-height: 1.6; margin: 10px 0;"> for paragraphs
-- Use <ul style="line-height: 1.8;"> for lists
-- All sources must be clickable hyperlinks with style: <a href="URL" style="color: #3498db; text-decoration: none;">Source Name</a>
-- NEVER show raw URLs in angle brackets like <https://...>
-- NEVER show URLs as plain text
-- ALL citations must use this format: <a href="actual-url">Source Name - Date</a>
-- Example CORRECT: <a href="https://announcements.asx.com.au/asxpdf/20251201/pdf/06sr2bsh6yv802.pdf" style="color: #3498db; text-decoration: none;">ASX Announcement - December 1, 2025</a>
-- Example WRONG: <https://announcements.asx.com.au/asxpdf/20251201/pdf/06sr2bsh6yv802.pdf>
-- URLs must ALWAYS be hidden inside anchor tags, never displayed as text
-- Use INLINE STYLES only - no <style> tags or external CSS
-- All formatting must be inline style attributes on each element
-- Professional styling suitable for email viewing
-
-Generate the complete report with ALL 19 stocks. Do not abbreviate or skip any stocks."""
+Generate the complete HTML for all 19 stocks now."""
 
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=32000,
-            system="You are an HTML report generator. Your response must contain ONLY valid HTML code and absolutely nothing else. Do not include any disclaimers, notes, explanations, or text outside the HTML tags. Your response must start with <html> or <!DOCTYPE html> and end with </html>. Everything you output will be sent directly as an email body. No preambles. No explanations. No meta-commentary. Only HTML.",
+            system="You generate HTML email reports. Output ONLY HTML code starting with <!DOCTYPE html> and ending with </html>. No explanations, no disclaimers, no text outside HTML tags. All URLs must be in <a href> tags, never as raw text.",
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}]
         )
@@ -203,17 +141,16 @@ Generate the complete report with ALL 19 stocks. Do not abbreviate or skip any s
             if block.type == "text":
                 html_content += block.text
         
-        # Strip any text before <html> or <!DOCTYPE and after </html>
-        import re
-        # Find the HTML content between tags
+        # Strip any text before <!DOCTYPE or <html> and after </html>
         html_match = re.search(r'(<!DOCTYPE[^>]*>)?\s*<html.*?</html>', html_content, re.DOTALL | re.IGNORECASE)
         if html_match:
             html_content = html_match.group(0)
         else:
-            # If no full HTML structure, look for content starting with <h1>
+            # Fallback: look for content starting with <h1>
             html_match = re.search(r'<h1.*$', html_content, re.DOTALL | re.IGNORECASE)
             if html_match:
-                html_content = html_match.group(0)
+                # Wrap in basic HTML structure
+                html_content = f"<!DOCTYPE html><html><head><meta charset='UTF-8'></head><body>{html_match.group(0)}</body></html>"
         
         print("✅ Summary generated successfully!")
         print(f"📄 Content length: {len(html_content)} characters")
