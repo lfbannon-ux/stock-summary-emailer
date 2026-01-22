@@ -5,208 +5,160 @@ import sendgrid
 from sendgrid.helpers.mail import Mail, Email, To, Content
 from datetime import datetime
 import anthropic
-import re
-
-def extract_and_clean_html(raw_text):
-    """Nuclear option: Extract only HTML content and fix all issues"""
-    
-    print("\n🔧 AGGRESSIVE HTML EXTRACTION AND CLEANING...")
-    print(f"📄 Input length: {len(raw_text)} characters")
-    
-    # Step 1: Remove everything before the first <h1> or <html> tag
-    # This removes Claude's preambles and explanations
-    start_patterns = [
-        r'<html[^>]*>',
-        r'<!DOCTYPE[^>]*>',
-        r'<h1[^>]*>',
-    ]
-    
-    html_content = raw_text
-    for pattern in start_patterns:
-        match = re.search(pattern, html_content, re.IGNORECASE)
-        if match:
-            html_content = html_content[match.start():]
-            print(f"✅ Trimmed content before {pattern}")
-            break
-    
-    # Step 2: Remove everything after </html> or last </h2> section
-    end_patterns = [
-        r'</html>',
-        r'</body>',
-    ]
-    
-    for pattern in end_patterns:
-        matches = list(re.finditer(pattern, html_content, re.IGNORECASE))
-        if matches:
-            last_match = matches[-1]
-            html_content = html_content[:last_match.end()]
-            print(f"✅ Trimmed content after {pattern}")
-            break
-    
-    # Step 3: Fix SendGrid tracking URLs - convert to simple text links
-    # Pattern: <https://u59134112.ct.sendgrid.net/...>
-    def fix_sendgrid_url(match):
-        url = match.group(1)
-        return '<a href="' + url + '" style="color:#3498db;text-decoration:none;">View Source</a>'
-    
-    html_content = re.sub(r'<(https://u59134112\.ct\.sendgrid\.net/[^>]+)>', fix_sendgrid_url, html_content)
-    print("✅ Fixed SendGrid tracking URLs")
-    
-    # Step 4: Fix any remaining angle bracket URLs: <https://...>
-    def fix_angle_url(match):
-        url = match.group(1)
-        # Try to extract a readable name from the URL
-        if 'asx.com.au' in url:
-            link_text = 'ASX Announcement'
-        elif 'afr.com' in url:
-            link_text = 'AFR'
-        elif 'bloomberg' in url:
-            link_text = 'Bloomberg'
-        elif 'reuters' in url:
-            link_text = 'Reuters'
-        else:
-            # Extract domain
-            domain_match = re.search(r'https?://([^/]+)', url)
-            link_text = domain_match.group(1) if domain_match else 'Source'
-        
-        return f'<a href="{url}" style="color:#3498db;text-decoration:none;">{link_text}</a>'
-    
-    html_content = re.sub(r'<(https?://[^>]+)>', fix_angle_url, html_content)
-    print("✅ Fixed angle bracket URLs")
-    
-    # Step 5: Fix bare URLs that aren't in any tags
-    # But be careful not to touch URLs already in href attributes
-    def fix_bare_urls(text):
-        # Split by href attributes to avoid double-processing
-        parts = re.split(r'(href="[^"]*")', text)
-        result = []
-        
-        for i, part in enumerate(parts):
-            if i % 2 == 0:  # Not inside href=""
-                # Replace standalone URLs
-                part = re.sub(
-                    r'(?<!href=")(?<!")(?<!>)(https?://[^\s<>"]+)',
-                    lambda m: f'<a href="{m.group(0)}" style="color:#3498db;text-decoration:none;">Source</a>',
-                    part
-                )
-            result.append(part)
-        
-        return ''.join(result)
-    
-    html_content = fix_bare_urls(html_content)
-    print("✅ Fixed bare URLs")
-    
-    # Step 6: Wrap in proper HTML structure if not already wrapped
-    if not html_content.strip().startswith('<!DOCTYPE') and not html_content.strip().startswith('<html'):
-        html_content = f'''<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-</head>
-<body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;padding:20px;background-color:#ffffff;">
-{html_content}
-</body>
-</html>'''
-        print("✅ Wrapped content in HTML structure")
-    
-    # Step 7: Ensure closing tags
-    if '</body>' not in html_content:
-        html_content = html_content.replace('</html>', '</body></html>')
-    
-    print(f"✅ Final HTML length: {len(html_content)} characters")
-    
-    return html_content
 
 def main():
-    """Main function to generate and send daily stock summary"""
+    """Generate and send daily stock summary"""
     
     print("=" * 60)
-    print(f"🚀 Berkholts Daily Stock Summary Emailer")
-    print(f"📊 10 Stocks with Nuclear Post-Processing")
-    print(f"⏰ Started: {datetime.now()}")
+    print(f"🚀 Berkholts Daily Stock Summary (3 Stocks)")
+    print(f"⏰ {datetime.now()}")
     print("=" * 60)
     
-    # Environment variables
+    # Get environment variables
     anthropic_key = os.getenv('ANTHROPIC_API_KEY')
     sendgrid_key = os.getenv('SENDGRID_API_KEY')
     from_email = os.getenv('FROM_EMAIL')
     recipient_emails_str = os.getenv('RECIPIENT_EMAILS')
     
     if not all([anthropic_key, sendgrid_key, from_email, recipient_emails_str]):
-        print("\n❌ Missing environment variables!")
+        print("❌ Missing environment variables!")
         sys.exit(1)
     
     recipient_emails = [e.strip() for e in recipient_emails_str.split(',') if e.strip()]
     print(f"✅ Recipients: {recipient_emails}")
     
-    # Generate
+    # Generate summary with Claude
     try:
-        print("\n📊 Generating stock summaries...")
+        print("\n📊 Generating summaries (2-3 minutes)...")
         
         client = anthropic.Anthropic(api_key=anthropic_key)
         today = datetime.now().strftime("%B %d, %Y")
         
-        prompt = f"""Generate HTML email for {today}. Cover these 10 Australian stocks:
+        prompt = f"""Create a professional HTML email report for {today} covering these 3 Australian stocks:
 
-1. AUB Group Limited (AUB.AX)
-2. Mineral Resources Limited (MIN.AX)  
-3. Charter Hall Group (CHC.AX)
-4. HUB24 Limited (HUB.AX)
-5. Macquarie Group Limited (MQG.AX)
-6. CSL Limited (CSL.AX)
-7. Dicker Data Limited (DDR.AX)
-8. Hansen Technologies Limited (HSN.AX)
-9. Growthpoint Properties Australia (GOZ.AX)
-10. Propel Funeral Partners Limited (PFP.AX)
+1. AUB Group Limited (AUB.AX) - Insurance broker
+2. Mineral Resources Limited (MIN.AX) - Mining and resources
+3. Charter Hall Group (CHC.AX) - Commercial property REIT
 
-FORMAT:
-<h1 style="color:#2c3e50;border-bottom:3px solid #3498db;padding-bottom:10px;">Berkholts Stock Summaries - {today}</h1>
+For each stock, include these sections:
 
-Each stock:
-<h2 style="color:#34495e;margin-top:40px;border-bottom:2px solid #95a5a6;padding-bottom:8px;">N. Name (TICKER)</h2>
-<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">PRICE:</strong> A$XX.XX | <strong style="color:#2980b9;">YESTERDAY:</strong> change</p>
-<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">REASON FOR MOVE:</strong> recent news or "No material announcements"</p>
+**PRICE:** A$XX.XX | **YESTERDAY:** +/-A$X.XX (+/-X.XX%)
+
+**REASON FOR MOVE:** 
+- ONLY include NEW fundamental information from the LAST 7 DAYS with specific date
+- Information should be from company announcements or major credible news
+- If no material news in last 7 days: "No material company announcements in the past week"
+
+**COMPANY DEVELOPMENTS (Past Week):**
+- ONLY developments from the LAST 7 DAYS
+- Tag with [NEW] in orange
+- If nothing: "No new developments reported this week"
+
+**LAST COMPANY ANNOUNCEMENT:**
+- Date: [Date of most recent material ASX announcement]
+- Summary: [2-3 sentences describing what was announced, with specific numbers and guidance]
+- Source: [Hyperlink to actual ASX announcement URL]
+Search: "site:asx.com.au [ticker] announcement" to find this
+
+**INDUSTRY/COMPETITIVE DYNAMICS:**
+- 3 key points from the LAST MONTH
+- Each point MUST include: specific date, hard data (percentages, dollar values), and credible source
+- PRIORITIZE: Industry trade magazines, AFR, Bloomberg, Reuters, Financial Times, government data, industry research firms
+- EXCLUDE: Motley Fool, Simply Wall St, TradingView, DailyForex
+
+Format as clean HTML:
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;padding:20px;background-color:#ffffff;">
+
+<h1 style="color:#2c3e50;border-bottom:3px solid #3498db;padding-bottom:10px;margin-bottom:30px;">Berkholts Stock Summaries - {today}</h1>
+
+<h2 style="color:#34495e;margin-top:40px;border-bottom:2px solid #95a5a6;padding-bottom:8px;">1. AUB Group Limited (AUB.AX)</h2>
+
+<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">PRICE:</strong> A$XX.XX | <strong style="color:#2980b9;">YESTERDAY:</strong> <span style="color:#00AA00;font-weight:bold;">+A$X.XX (+X.XX%)</span></p>
+
+<p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">REASON FOR MOVE:</strong> [Recent news from last 7 days with date]</p>
+
 <p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">COMPANY DEVELOPMENTS (Past Week):</strong></p>
-<ul style="line-height:1.8;margin:10px 0;"><li>developments</li></ul>
+<ul style="line-height:1.8;margin:10px 0;">
+<li><span style="color:#FF8800;font-weight:bold;">[NEW]</span> <strong>Date:</strong> Development - <a href="URL" style="color:#3498db;text-decoration:none;">Source Name</a></li>
+</ul>
+
 <p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">LAST COMPANY ANNOUNCEMENT:</strong></p>
 <ul style="line-height:1.8;margin:10px 0;">
-<li><strong>Date:</strong> date</li>
-<li><strong>Summary:</strong> summary</li>
-<li><strong>Source:</strong> <a href="url" style="color:#3498db;text-decoration:none;">ASX</a></li>
+<li><strong>Date:</strong> Month Day, Year</li>
+<li><strong>Summary:</strong> What was announced with specific numbers</li>
+<li><strong>Source:</strong> <a href="https://announcements.asx.com.au/..." style="color:#3498db;text-decoration:none;">ASX Announcement</a></li>
 </ul>
+
 <p style="line-height:1.6;margin:10px 0;"><strong style="color:#2980b9;">INDUSTRY/COMPETITIVE DYNAMICS:</strong></p>
-<ul style="line-height:1.8;margin:10px 0;"><li>data points with sources</li></ul>
+<ul style="line-height:1.8;margin:10px 0;">
+<li><strong>Month Year:</strong> Specific data point with numbers - <a href="URL" style="color:#3498db;text-decoration:none;">Credible Source</a></li>
+<li><strong>Month Year:</strong> Another data point - <a href="URL" style="color:#3498db;text-decoration:none;">Source Name</a></li>
+<li><strong>Month Year:</strong> Third data point - <a href="URL" style="color:#3498db;text-decoration:none;">Source Name</a></li>
+</ul>
+
 <hr style="border:none;border-top:1px solid #ddd;margin:30px 0;">
 
-Use web search to find real data. Generate all 10 stocks."""
+[Repeat this format for stocks 2 and 3]
+
+</body>
+</html>
+
+CRITICAL LINK FORMATTING:
+- ALL sources MUST be proper HTML hyperlinks: <a href="URL" style="color:#3498db;text-decoration:none;">Link Text</a>
+- NEVER use raw URLs like <https://...> or https://...
+- Link text should be descriptive: "ASX Announcement", "Bloomberg", "AFR", etc.
+
+SEARCH INSTRUCTIONS:
+- Search for "[company name] stock price ASX" for current prices
+- Search for "site:asx.com.au [ticker] announcement 2025 2026" for ASX announcements
+- Search for "[company name] news January 2026" for recent developments
+- Search for "[industry] Australia data 2025 2026" for industry dynamics
+
+Generate the complete HTML report for all 3 stocks with real data."""
 
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=32000,
-            system="Generate HTML report. Start with <h1> tag immediately. No explanations.",
+            max_tokens=16000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}]
         )
         
-        # Extract raw response
-        raw_text = ""
+        # Extract HTML
+        html_content = ""
         for block in message.content:
             if block.type == "text":
-                raw_text += block.text
+                html_content += block.text
         
-        print(f"📄 Received {len(raw_text)} characters from Claude")
+        # Simple cleanup: if content doesn't start with <!DOCTYPE or <html, wrap it
+        content_stripped = html_content.strip()
+        if not (content_stripped.startswith('<!DOCTYPE') or content_stripped.startswith('<html')):
+            html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;padding:20px;background-color:#ffffff;">
+{html_content}
+</body>
+</html>"""
         
-        # NUCLEAR CLEANING
-        html_content = extract_and_clean_html(raw_text)
+        print(f"✅ Generated {len(html_content)} characters")
         
     except Exception as e:
-        print(f"\n❌ Generation error: {e}")
+        print(f"❌ Error generating: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
     
-    # Send
+    # Send emails
     try:
         print("\n📧 Sending emails...")
         
@@ -214,7 +166,7 @@ Use web search to find real data. Generate all 10 stocks."""
         subject = f"Berkholts Stock Summaries - {today}"
         
         for recipient in recipient_emails:
-            print(f"📤 Sending to {recipient}...")
+            print(f"   → {recipient}")
             
             mail = Mail(
                 from_email=Email(from_email),
@@ -223,21 +175,13 @@ Use web search to find real data. Generate all 10 stocks."""
                 html_content=Content("text/html", html_content)
             )
             
-            try:
-                response = sg.client.mail.send.post(request_body=mail.get())
-                print(f"   ✅ Sent! Status: {response.status_code}")
-            except Exception as e:
-                print(f"   ❌ Failed: {e}")
+            response = sg.client.mail.send.post(request_body=mail.get())
+            print(f"   ✅ Sent (Status: {response.status_code})")
         
-        print("\n" + "=" * 60)
-        print("✅ COMPLETE!")
-        print(f"⏰ Finished: {datetime.now()}")
-        print("=" * 60)
+        print("\n✅ DONE!")
         
     except Exception as e:
-        print(f"\n❌ Send error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Error sending: {e}")
         sys.exit(1)
 
 
