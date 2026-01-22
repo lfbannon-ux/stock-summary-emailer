@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-Berkholts Daily Stock Summary Emailer - URL VALIDATION VERSION
-================================================================
-Uses:
-- yfinance: FREE accurate stock prices from Yahoo Finance  
-- Claude API: For news analysis with VALIDATED URLs only
-- URL validation: Checks ASX links exist before including them
+Berkholts Daily Stock Summary Emailer - TWO-STEP VERSION
+==========================================================
+Based on the 7:50pm version that actually worked.
 
-Key fix: ASX URLs are verified before being included in email.
-If Claude invents a fake URL, it gets caught and replaced with
-a link to the company's announcement page instead.
+The key insight: Claude needs to do research FIRST in one call,
+then format the results into HTML in a SECOND call.
+
+When we combine research + formatting in one prompt, Claude
+either skips the research or produces generic filler.
 """
 
 import os
@@ -24,7 +23,7 @@ import yfinance as yf
 
 
 # ============================================================================
-# CONFIGURATION - 2 STOCKS FOR TESTING
+# CONFIGURATION
 # ============================================================================
 
 STOCKS = [
@@ -46,71 +45,22 @@ STOCKS = [
 
 
 # ============================================================================
-# URL VALIDATION - Check if ASX PDF URLs actually exist
-# ============================================================================
-
-def validate_asx_url(url: str) -> bool:
-    """
-    Check if an ASX PDF URL actually exists by doing a HEAD request.
-    Returns True if the URL returns 200, False otherwise.
-    """
-    if not url or 'asx.com.au' not in url:
-        return False
-    
-    try:
-        # Use HEAD request to check if file exists without downloading
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        response = requests.head(url, headers=headers, timeout=10, allow_redirects=True)
-        return response.status_code == 200
-    except:
-        return False
-
-
-def validate_and_fix_urls_in_html(html: str, asx_code: str) -> str:
-    """
-    Find all ASX URLs in the HTML, validate them, and replace broken ones
-    with a link to the company's announcement page.
-    """
-    # Pattern to find ASX announcement URLs
-    asx_url_pattern = r'href="(https://[^"]*asx[^"]*\.pdf)"'
-    
-    # Fallback URL - the company's announcement page on ASX
-    fallback_url = f"https://www.asx.com.au/markets/company/{asx_code}"
-    
-    def replace_if_invalid(match):
-        url = match.group(1)
-        if validate_asx_url(url):
-            # URL is valid, keep it
-            return match.group(0)
-        else:
-            # URL is invalid/fake, replace with fallback
-            print(f"      ⚠️ Invalid URL detected: {url[:60]}...")
-            print(f"         Replacing with company page: {fallback_url}")
-            return f'href="{fallback_url}"'
-    
-    return re.sub(asx_url_pattern, replace_if_invalid, html)
-
-
-# ============================================================================
-# PRICE DATA - Using yfinance (FREE & ACCURATE)
+# PRICE DATA - yfinance (FREE & ACCURATE)
 # ============================================================================
 
 def get_stock_price(ticker: str) -> dict:
-    """Get ACCURATE stock price from Yahoo Finance."""
+    """Get accurate stock price from Yahoo Finance."""
     try:
         stock = yf.Ticker(ticker)
         hist = stock.history(period="5d")
         
         if len(hist) < 2:
-            return {"error": f"Not enough price history for {ticker}"}
+            return {"error": f"Not enough history for {ticker}"}
         
         yesterday_close = float(hist['Close'].iloc[-1])
         previous_close = float(hist['Close'].iloc[-2])
         yesterday_date = hist.index[-1].strftime("%B %d, %Y")
         previous_date = hist.index[-2].strftime("%B %d, %Y")
-        
         change_percent = ((yesterday_close - previous_close) / previous_close) * 100
         
         return {
@@ -126,50 +76,89 @@ def get_stock_price(ticker: str) -> dict:
 
 
 # ============================================================================
-# CLAUDE ANALYSIS - With strict URL requirements
+# STEP 1: RESEARCH - Claude searches and collects raw data
 # ============================================================================
 
-def get_stock_analysis(client: anthropic.Anthropic, stock: dict) -> str:
+def research_stock(client: anthropic.Anthropic, stock: dict, today_str: str) -> str:
     """
-    Get comprehensive analysis from Claude with URLs.
+    STEP 1: Research a stock using web search.
+    This call ONLY does research - no HTML formatting.
+    Returns raw research data as text.
     """
     
-    prompt = f"""Research {stock['name']} (ASX: {stock['asx_code']}, Yahoo: {stock['ticker']}).
+    prompt = f"""You are a financial research analyst. Today is {today_str}.
 
-Provide these sections:
+Research {stock['name']} (ASX: {stock['asx_code']}, Yahoo: {stock['ticker']}) and report your findings.
 
-1. REASON FOR MOVE (Last 7 days)
-   - Any material news explaining recent price movement
-   - Include source URL if found
-   - If no news, say "No material announcements in the past week"
+SEARCH AND REPORT ON:
 
-2. LAST PRICE-SENSITIVE ANNOUNCEMENT
-   Search for real ASX announcements using: site:announcements.asx.com.au {stock['asx_code']}
-   - Date (exact)
-   - Type (trading update/guidance/results/etc)
-   - Summary WITH SPECIFIC NUMBERS
-   - IMPORTANT: Only include a URL if you found it in search results
-   - If you cannot find the actual URL, write "URL: See ASX website"
+1. RECENT NEWS (Last 7 days)
+   Search: "{stock['name']} news January 2026"
+   - Any material announcements or news?
+   - Report with dates and source URLs
+   - If nothing found, write "NO RECENT NEWS FOUND"
 
-3. LAST EARNINGS REPORT
-   - Date, Type
-   - Revenue, NPAT, EPS, Dividend with % growth
-   - URL if found, otherwise "URL: See ASX website"
+2. LAST ASX ANNOUNCEMENT
+   Search: "site:asx.com.au {stock['asx_code']} announcement"
+   Search: "{stock['name']} ASX announcement 2025"
+   - Find the most recent price-sensitive announcement
+   - Report: Date, Type, Summary with SPECIFIC NUMBERS
+   - Include the actual URL if you find it
+   - Real URLs look like: https://announcements.asx.com.au/asxpdf/YYYYMMDD/pdf/XXXXX.pdf
 
-4. INDUSTRY DYNAMICS ({stock['industry']} - 3 bullet points)
-   - Market trends with dates and numbers
-   - Each with source URL
+3. LAST EARNINGS RESULTS
+   Search: "{stock['name']} annual results 2025" OR "{stock['name']} half year results"
+   - Date of announcement
+   - Revenue (with % growth)
+   - NPAT/Profit (with % growth)
+   - EPS
+   - Dividend
+   - Source URL
 
-5. COMPETITIVE DYNAMICS (2 bullet points about: {', '.join(stock['competitors'])})
-   - Specific competitor news with dates
-   - Each with source URL
+4. INDUSTRY NEWS ({stock['industry']} sector)
+   Search: "Australian {stock['industry']} industry 2026 statistics"
+   - Find 3 specific data points with numbers
+   - Include dates and source URLs
 
-CRITICAL RULES:
-- NEVER invent or guess URLs - only use URLs you actually found in search results
-- If you cannot find a real URL, write "URL: See ASX website" or "URL: Not found"
-- Real ASX PDF URLs look like: https://announcements.asx.com.au/asxpdf/YYYYMMDD/pdf/XXXXX.pdf
-- The XXXXX part is a real document ID like "06sr2bsh6yv802" - NEVER make these up
-"""
+5. COMPETITOR NEWS
+   Search: "{stock['competitors'][0]} ASX announcement 2026"
+   Search: "{stock['competitors'][1]} ASX results"
+   - Find specific news about these named competitors
+   - Include dates and source URLs
+
+FORMAT YOUR RESPONSE AS RAW DATA:
+==================================
+STOCK: {stock['name']}
+
+RECENT_NEWS:
+[your findings or "NO RECENT NEWS FOUND"]
+
+LAST_ANNOUNCEMENT:
+Date: [date]
+Type: [type]
+Summary: [summary with numbers]
+URL: [actual URL or "NOT FOUND"]
+
+EARNINGS:
+Date: [date]
+Type: [Annual/Half-Year]
+Revenue: [amount and growth]
+NPAT: [amount and growth]
+EPS: [amount]
+Dividend: [amount]
+URL: [URL or "NOT FOUND"]
+
+INDUSTRY_DYNAMICS:
+1. [date]: [fact with numbers] - Source: [name] URL: [url]
+2. [date]: [fact with numbers] - Source: [name] URL: [url]
+3. [date]: [fact with numbers] - Source: [name] URL: [url]
+
+COMPETITOR_NEWS:
+1. [competitor name]: [date] - [news] - URL: [url]
+2. [competitor name]: [date] - [news] - URL: [url]
+==================================
+
+IMPORTANT: Use web search to find REAL information. Do not make up data."""
 
     try:
         response = client.messages.create(
@@ -187,17 +176,20 @@ CRITICAL RULES:
         return result
     
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"RESEARCH ERROR: {str(e)}"
 
 
 # ============================================================================
-# HTML GENERATION
+# STEP 2: FORMAT - Convert research into HTML
 # ============================================================================
 
-def generate_stock_html(client: anthropic.Anthropic, stock: dict, price_data: dict, analysis: str, stock_num: int) -> str:
-    """Generate HTML for a single stock."""
+def format_to_html(client: anthropic.Anthropic, stock: dict, price_data: dict, research: str, stock_num: int) -> str:
+    """
+    STEP 2: Format the research data into HTML.
+    This call ONLY formats - no web searching.
+    """
     
-    # Price HTML (from yfinance - ACCURATE)
+    # Build price HTML (from yfinance - accurate)
     if price_data.get('error'):
         price_html = f'<p style="color:red;">Price unavailable: {price_data["error"]}</p>'
     else:
@@ -208,64 +200,65 @@ def generate_stock_html(client: anthropic.Anthropic, stock: dict, price_data: di
 <strong style="color:#2980b9;">PREVIOUS ({price_data['previous_date']}):</strong> A${price_data['previous_close']:.2f} | 
 <strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};font-weight:bold;">{change_sign}{price_data['change_percent']:.2f}%</span>
 </p>'''
+
+    # Fallback URL for when no real URL is found
+    fallback_url = f"https://www.asx.com.au/markets/company/{stock['asx_code']}"
     
-    # Ask Claude to format analysis into HTML
-    format_prompt = f"""Convert this analysis into HTML sections. Output ONLY HTML code.
+    prompt = f"""Convert this research into HTML for an email. Output ONLY HTML code.
 
-STOCK: {stock['name']} ({stock['ticker']})
+RESEARCH DATA:
+{research}
 
-ANALYSIS DATA:
-{analysis}
+FALLBACK URL (use when URL says "NOT FOUND"): {fallback_url}
 
-Generate these HTML sections (PRICE is already done, don't include it):
+Generate HTML using this EXACT structure:
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">REASON FOR MOVE:</strong><br>
-[content - if no material news, write "No material announcements in the past week"]
+[Use RECENT_NEWS section. If "NO RECENT NEWS FOUND", write "No material announcements in the past week"]
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">LAST PRICE-SENSITIVE ANNOUNCEMENT:</strong><br>
-<strong>Date:</strong> [date]<br>
-<strong>Type:</strong> [type]<br>
-<strong>Summary:</strong> [summary with numbers]<br>
-<strong>Source:</strong> <a href="[URL or https://www.asx.com.au/markets/company/{stock['asx_code']}]" style="color:#3498db;text-decoration:underline;">ASX Announcement</a>
+<strong>Date:</strong> [from LAST_ANNOUNCEMENT]<br>
+<strong>Type:</strong> [from LAST_ANNOUNCEMENT]<br>
+<strong>Summary:</strong> [from LAST_ANNOUNCEMENT - keep specific numbers]<br>
+<strong>Source:</strong> <a href="[URL from research, or fallback URL]" style="color:#3498db;text-decoration:underline;">ASX Announcement</a>
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong><br>
-[date, type, metrics]<br>
-<strong>Source:</strong> <a href="[URL or https://www.asx.com.au/markets/company/{stock['asx_code']}]" style="color:#3498db;text-decoration:underline;">ASX Announcement</a>
+<strong>Date:</strong> [date] | <strong>Type:</strong> [type]<br>
+<strong>Revenue:</strong> [revenue] | <strong>NPAT:</strong> [npat] | <strong>EPS:</strong> [eps] | <strong>Dividend:</strong> [div]<br>
+<strong>Source:</strong> <a href="[URL or fallback]" style="color:#3498db;text-decoration:underline;">ASX Announcement</a>
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">INDUSTRY DYNAMICS:</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
-<li>[point with <a href="URL" style="color:#3498db;text-decoration:underline;">Source</a>]</li>
-<li>[point]</li>
-<li>[point]</li>
+[3 list items from INDUSTRY_DYNAMICS, each with <a href="URL">Source</a>]
 </ul>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">COMPETITIVE DYNAMICS:</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
-<li>[competitor point]</li>
-<li>[competitor point]</li>
+[2 list items from COMPETITOR_NEWS, each with <a href="URL">Source</a>]
 </ul>
 
 RULES:
-- All URLs must be in <a href> format
-- If URL says "See ASX website" or "Not found", use: https://www.asx.com.au/markets/company/{stock['asx_code']}
-- Output ONLY HTML, no explanations"""
+1. All URLs in <a href="URL"> format
+2. Keep all specific numbers from the research
+3. If data is missing, use the fallback URL
+4. Output ONLY HTML - no explanations"""
 
     try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=3000,
-            system="You are an HTML generator. Output ONLY valid HTML code. No explanations.",
-            messages=[{"role": "user", "content": format_prompt}]
+            system="You are an HTML formatter. Convert the research data into clean HTML. Output ONLY HTML code, nothing else.",
+            messages=[{"role": "user", "content": prompt}]
         )
         
         analysis_html = ""
@@ -274,10 +267,10 @@ RULES:
                 analysis_html += block.text
         
     except Exception as e:
-        analysis_html = f"<p style='color:red;'>Analysis error: {str(e)}</p>"
+        analysis_html = f"<p style='color:red;'>Formatting error: {str(e)}</p>"
     
-    # Combine
-    full_html = f'''
+    # Combine header + price + formatted analysis
+    return f'''
 <h2 style="color:#34495e;margin-top:30px;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
 {stock_num}. {stock['name']} ({stock['ticker']})
 </h2>
@@ -288,17 +281,46 @@ RULES:
 
 <hr style="border:none;border-top:1px solid #ecf0f1;margin:30px 0;">
 '''
-    
-    # VALIDATE AND FIX any broken ASX URLs
-    print(f"      🔍 Validating ASX URLs...")
-    full_html = validate_and_fix_urls_in_html(full_html, stock['asx_code'])
-    
-    return full_html
 
 
-def wrap_in_email_template(content: str, today: str) -> str:
-    """Wrap content in Outlook-compatible email template."""
+# ============================================================================
+# URL VALIDATION
+# ============================================================================
+
+def validate_asx_url(url: str) -> bool:
+    """Check if an ASX PDF URL exists."""
+    if not url or 'asx.com.au' not in url or '.pdf' not in url:
+        return False
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.head(url, headers=headers, timeout=10, allow_redirects=True)
+        return response.status_code == 200
+    except:
+        return False
+
+
+def validate_urls_in_html(html: str, asx_code: str) -> str:
+    """Validate ASX PDF URLs and replace broken ones."""
+    fallback = f"https://www.asx.com.au/markets/company/{asx_code}"
     
+    pattern = r'href="(https://[^"]*\.pdf)"'
+    
+    def check_and_replace(match):
+        url = match.group(1)
+        if 'asx.com.au' in url and not validate_asx_url(url):
+            print(f"      ⚠️ Broken URL: {url[:50]}... → Using fallback")
+            return f'href="{fallback}"'
+        return match.group(0)
+    
+    return re.sub(pattern, check_and_replace, html)
+
+
+# ============================================================================
+# EMAIL TEMPLATE
+# ============================================================================
+
+def wrap_in_template(content: str, today: str) -> str:
+    """Wrap in Outlook-compatible HTML template."""
     return f'''<!DOCTYPE html>
 <html>
 <head>
@@ -319,7 +341,7 @@ Berkholts Stock Summaries - {today}
 
 <p style="color:#7f8c8d;font-size:12px;margin-top:30px;text-align:center;">
 Generated by Berkholts Stock Summary System<br>
-<strong>Prices:</strong> Yahoo Finance (accurate) | <strong>Analysis:</strong> Claude AI (URLs validated)
+Prices: Yahoo Finance | Analysis: Claude AI
 </p>
 
 </td></tr>
@@ -330,36 +352,9 @@ Generated by Berkholts Stock Summary System<br>
 </html>'''
 
 
-def fix_urls_in_html(html: str) -> str:
-    """Post-process HTML to fix angle bracket URLs."""
-    
-    pattern = r'<(https?://[^>]+)>'
-    
-    def replace_angle_url(match):
-        url = match.group(1)
-        if 'asx.com.au' in url:
-            text = 'ASX Announcement'
-        elif 'afr.com' in url:
-            text = 'AFR'
-        elif 'bloomberg.com' in url:
-            text = 'Bloomberg'
-        elif 'reuters.com' in url:
-            text = 'Reuters'
-        else:
-            text = 'Source'
-        return f'<a href="{url}" style="color:#3498db;text-decoration:underline;">{text}</a>'
-    
-    return re.sub(pattern, replace_angle_url, html)
-
-
-# ============================================================================
-# EMAIL SENDING
-# ============================================================================
-
-def send_email(html_content: str, recipient: str, smtp_email: str, smtp_password: str, subject: str):
+def send_email(html: str, recipient: str, smtp_email: str, smtp_password: str, subject: str):
     """Send HTML email via Gmail SMTP."""
-    
-    msg = MIMEText(html_content, 'html', 'utf-8')
+    msg = MIMEText(html, 'html', 'utf-8')
     msg['Subject'] = subject
     msg['From'] = smtp_email
     msg['To'] = recipient
@@ -374,20 +369,13 @@ def send_email(html_content: str, recipient: str, smtp_email: str, smtp_password
 # ============================================================================
 
 def main():
-    """Main function."""
-    
     print("=" * 70)
     print("🚀 Berkholts Daily Stock Summary Emailer")
-    print("🔒 URL VALIDATION VERSION - Fake links will be caught!")
-    print("   • Prices: yfinance (FREE, accurate)")
-    print("   • Analysis: Claude API with web search")
-    print("   • URLs: Validated before inclusion")
-    print(f"⏰ Started at: {datetime.now()}")
+    print("📊 TWO-STEP VERSION: Research first, then format")
+    print(f"⏰ Started: {datetime.now()}")
     print("=" * 70)
     
-    # Check environment variables
-    print("\n📋 Checking environment variables...")
-    
+    # Check env vars
     anthropic_key = os.getenv('ANTHROPIC_API_KEY')
     smtp_email = os.getenv('SMTP_EMAIL')
     smtp_password = os.getenv('SMTP_PASSWORD')
@@ -400,72 +388,62 @@ def main():
     if not recipient_emails_str: missing.append('RECIPIENT_EMAILS')
     
     if missing:
-        print(f"\n❌ Missing: {', '.join(missing)}")
+        print(f"❌ Missing: {', '.join(missing)}")
         sys.exit(1)
-    
-    print("✅ All environment variables found")
     
     recipients = [e.strip() for e in recipient_emails_str.split(',') if e.strip()]
     print(f"📧 Recipients: {', '.join(recipients)}")
-    print(f"📈 Stocks: {len(STOCKS)}")
     
-    # Initialize Claude client
     client = anthropic.Anthropic(api_key=anthropic_key)
+    today_str = datetime.now().strftime("%B %d, %Y")
     
-    # Calculate today's date
-    today = datetime.now()
-    today_str = today.strftime("%B %d, %Y")
-    
-    # Process each stock
-    all_stock_html = ""
+    all_html = ""
     
     for i, stock in enumerate(STOCKS, 1):
         print(f"\n{'=' * 70}")
-        print(f"📊 STOCK {i}/{len(STOCKS)}: {stock['name']} ({stock['ticker']})")
+        print(f"📊 STOCK {i}/{len(STOCKS)}: {stock['name']}")
         print("=" * 70)
         
-        # 1. Get ACCURATE price from yfinance (FREE)
-        print(f"   💰 Fetching price from Yahoo Finance...", end=" ")
-        price_data = get_stock_price(stock['ticker'])
-        if price_data.get('error'):
-            print(f"⚠️ {price_data['error']}")
+        # Get price (yfinance - accurate)
+        print("   💰 Getting price from Yahoo Finance...", end=" ")
+        price = get_stock_price(stock['ticker'])
+        if price.get('error'):
+            print(f"⚠️ {price['error']}")
         else:
-            print(f"✅ A${price_data['yesterday_close']:.2f} ({price_data['change_percent']:+.2f}%)")
+            print(f"✅ A${price['yesterday_close']:.2f} ({price['change_percent']:+.2f}%)")
         
-        # 2. Get analysis from Claude
-        print(f"   🔍 Getting analysis from Claude...")
-        analysis = get_stock_analysis(client, stock)
+        # STEP 1: Research
+        print("   🔍 STEP 1: Researching (web search)...")
+        research = research_stock(client, stock, today_str)
+        print(f"      Research length: {len(research)} chars")
         
-        # 3. Generate HTML (includes URL validation)
-        print(f"   🎨 Generating HTML...")
-        stock_html = generate_stock_html(client, stock, price_data, analysis, i)
-        all_stock_html += stock_html
-        print(f"   ✅ Done!")
+        # STEP 2: Format
+        print("   🎨 STEP 2: Formatting to HTML...")
+        stock_html = format_to_html(client, stock, price, research, i)
+        
+        # Validate URLs
+        print("   🔗 Validating URLs...")
+        stock_html = validate_urls_in_html(stock_html, stock['asx_code'])
+        
+        all_html += stock_html
+        print("   ✅ Complete!")
     
-    # Assemble final email
-    print(f"\n{'=' * 70}")
-    print("📧 Assembling final email...")
+    # Final assembly
+    print(f"\n📧 Assembling email...")
+    final_html = wrap_in_template(all_html, today_str)
+    print(f"📄 Total: {len(final_html)} chars")
     
-    final_html = wrap_in_email_template(all_stock_html, today_str)
-    final_html = fix_urls_in_html(final_html)
-    print(f"📄 Total HTML: {len(final_html)} characters")
-    
-    # Send emails
-    print(f"\n📤 Sending emails...")
+    # Send
     subject = f"Berkholts Stock Summaries - {today_str}"
-    
     for recipient in recipients:
         try:
-            print(f"   📤 {recipient}...", end=" ")
+            print(f"📤 Sending to {recipient}...", end=" ")
             send_email(final_html, recipient, smtp_email, smtp_password, subject)
-            print("✅ Sent!")
+            print("✅")
         except Exception as e:
-            print(f"❌ {str(e)}")
+            print(f"❌ {e}")
     
-    print(f"\n{'=' * 70}")
-    print("✅ ALL DONE!")
-    print(f"⏰ Completed at: {datetime.now()}")
-    print("=" * 70)
+    print(f"\n✅ DONE at {datetime.now()}")
 
 
 if __name__ == "__main__":
