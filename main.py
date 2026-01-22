@@ -10,7 +10,7 @@ def main():
     """Main function to generate and send daily stock summary"""
     
     print("=" * 60)
-    print(f"🚀 Daily Stock Summary Emailer")
+    print(f"🚀 Berkholts Daily Stock Summary Emailer")
     print(f"⏰ Started at: {datetime.now()}")
     print("=" * 60)
     
@@ -68,57 +68,112 @@ def main():
     try:
         print("\n" + "=" * 60)
         print("📊 Generating stock summaries with Claude API...")
-        print("⏱️  This will take 1-2 minutes...")
+        print("⏱️  This will take 3-5 minutes...")
         print("=" * 60)
         
         client = anthropic.Anthropic(api_key=anthropic_key)
         today = datetime.now().strftime("%B %d, %Y")
         
-        prompt = f"""Generate a comprehensive daily stock summary report for {today} for the following 10 Australian stocks:
+        prompt = f"""Generate a comprehensive daily stock summary report for {today} for the following 19 Australian stocks IN THIS EXACT ORDER:
 
-1. Charter Hall Group (CHC.AX)
-2. Macquarie Group (MQG.AX)
-3. Hansen Technologies (HSN.AX)
+1. AUB Group (AUB.AX)
+2. Mineral Resources (MIN.AX)
+3. Charter Hall Group (CHC.AX)
 4. HUB24 (HUB.AX)
-5. PEXA (PXA.AX)
-6. Sigma Healthcare (SIG.AX)
-7. Mineral Resources (MIN.AX)
-8. Supply Network (SNL.AX)
-9. Dicker Data (DDR.AX)
-10. CSL Limited (CSL.AX)
+5. Macquarie Group (MQG.AX)
+6. CSL Limited (CSL.AX)
+7. Dicker Data (DDR.AX)
+8. Hansen Technologies (HSN.AX)
+9. Growthpoint Properties Australia (GOZ.AX)
+10. Propel Funeral Partners (PFP.AX)
+11. Nick Scali (NCK.AX)
+12. Xero (XRO.AX)
+13. Block Inc (SQ2.AX)
+14. Commonwealth Bank (CBA.AX)
+15. News Corp (NWS.AX)
+16. Sigma Healthcare (SIG.AX)
+17. Supply Network (SNL.AX)
+18. James Hardie Industries (JHX.AX)
+19. PEXA Group (PXA.AX)
 
-For EACH stock, provide:
+For EACH stock, provide the following sections:
 
 **PRICE:** [Current price] | **YESTERDAY:** [Change and %]
 
-**REASON FOR MOVE:** [Fundamental catalyst only - exclude technical analysis unless materially significant]
+**REASON FOR MOVE:** 
+- ONLY include NEW fundamental information from the last 7 days
+- Must be timestamped with specific date
+- Preferably from company ASX announcements or major credible news
+- If no material news in last 7 days, state "No material company announcements in the past week" and note broader market factors if relevant
+- Exclude technical analysis unless materially significant
 
 **COMPANY DEVELOPMENTS (Past Week):**
 - Tag any NEW developments with [NEW]
+- ONLY include developments from the last 7 days
 - Focus on: earnings, guidance changes, major contracts, acquisitions, management changes
-- Include dates and sources
+- Include dates and hyperlinked sources
+- If nothing in past week, state "No new developments reported this week"
 
-**INDUSTRY/COMPETITIVE DYNAMICS (2-3 key points):**
-- Each point must include: DATE and SOURCE
-- Focus on: volumes, pricing, customers, competitive dynamics, industry structure, regulatory changes
-- Warren Buffett-style fundamental analysis only
+**LAST COMPANY ANNOUNCEMENT:**
+This is a CRITICAL section - you must search thoroughly for this information:
+- **Date:** [Date of most recent material ASX announcement]
+- **Summary:** [Detailed 2-3 sentence summary of what was announced, with specific numbers and guidance if applicable]
+- **Source:** [Hyperlinked ASX announcement URL]
 
-CRITICAL REQUIREMENTS:
-- Use web search to find current prices and recent news
-- All industry trends must be DATED and SOURCED
-- Tag anything that's new information since yesterday with [NEW]
-- Focus on business fundamentals that affect: volumes, pricing, customers, margins, competitive position
-- Exclude pure technical analysis (chart patterns, moving averages, etc.)
-- Keep each stock section concise but informative
+SEARCH STRATEGY FOR FINDING LAST ANNOUNCEMENT:
+1. Search: "site:asx.com.au [ticker] announcement 2025 2026"
+2. Search: "[Company name] ASX guidance update 2025"
+3. Search: "[Company name] trading update"
+4. Look for announcements containing: guidance, outlook, earnings, trading update, AGM
+5. Prioritize the MOST RECENT material announcement (not just price-sensitive)
+6. Common announcement types to look for: quarterly updates, AGM addresses, guidance updates, results
 
-Format the output as clean, professional HTML with:
-- Clear headers for each stock
-- Green for positive moves, red for negative
-- [NEW] tags highlighted in orange
-- Sources in italics
-- Professional styling suitable for email
+**INDUSTRY/COMPETITIVE DYNAMICS (3 key points):**
+Each point MUST include:
+- Specific DATE (month and year minimum)
+- HARD DATA (percentages, dollar values, volumes, growth rates)
+- HYPERLINKED credible SOURCE
 
-Begin with an <h1> title "Daily Stock Summaries - {today}" and format everything ready to send as an email body."""
+SOURCE QUALITY REQUIREMENTS:
+✅ PRIORITIZE THESE SOURCES:
+- Industry trade magazines and journals
+- Major credible news outlets (AFR, Bloomberg, Reuters, Financial Times)
+- Government/regulatory data (ABS, RBA, ASIC, industry regulators)
+- Industry associations and research firms (Gartner, IDC, JLL, CBRE, etc.)
+- Company financial reports and industry reports
+- Specialist financial research firms
+
+❌ EXCLUDE THESE SOURCES:
+- Motley Fool
+- Simply Wall St
+- TradingView
+- DailyForex
+- Property listing sites (Domain, realestate.com.au) unless citing hard data
+- General investment advice websites
+- Retail investor forums
+
+Focus on information that materially affects: volumes, pricing, customer behavior, margins, competitive position, regulatory changes, industry structure
+
+CRITICAL REQUIREMENTS FOR ALL SECTIONS:
+- Use web search extensively to find current prices, recent ASX announcements, and credible industry news
+- ALL sources must be HYPERLINKED using HTML anchor tags: <a href="URL">Source Name</a>
+- All dates must be specific (not "recently" or "last week")
+- Focus on business fundamentals, not technical chart analysis
+- Maintain consistent professional tone throughout
+
+FORMAT AS PROFESSIONAL HTML EMAIL:
+- Begin with: <h1>Berkholts Stock Summaries - {today}</h1>
+- NO text or content above this heading
+- Use <h2> for each stock name and ticker
+- Use <strong> for section headers (PRICE, REASON FOR MOVE, etc.)
+- Use green color (#00AA00) for positive price moves
+- Use red color (#DD0000) for negative price moves  
+- Use orange color (#FF8800) for [NEW] tags
+- Use proper paragraph spacing and formatting
+- All sources must be clickable hyperlinks
+- Professional styling suitable for email viewing
+
+Begin generating the report now."""
 
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -149,7 +204,7 @@ Begin with an <h1> title "Daily Stock Summaries - {today}" and format everything
         print("=" * 60)
         
         sg = sendgrid.SendGridAPIClient(api_key=sendgrid_key)
-        subject = f"Daily Stock Summaries - {today}"
+        subject = f"Berkholts Stock Summaries - {today}"
         from_email_obj = Email(from_email)
         
         for i, recipient in enumerate(recipient_emails, 1):
