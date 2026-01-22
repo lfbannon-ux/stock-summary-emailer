@@ -74,27 +74,29 @@ def main():
         client = anthropic.Anthropic(api_key=anthropic_key)
         today = datetime.now().strftime("%B %d, %Y")
         
-        prompt = f"""Generate a comprehensive daily stock summary report for {today} for the following 19 Australian stocks IN THIS EXACT ORDER:
+        prompt = f"""You are generating a professional stock market summary report. Output ONLY the HTML report - no preambles, explanations, or apologies.
 
-1. AUB Group (AUB.AX)
-2. Mineral Resources (MIN.AX)
-3. Charter Hall Group (CHC.AX)
-4. HUB24 (HUB.AX)
-5. Macquarie Group (MQG.AX)
-6. CSL Limited (CSL.AX)
-7. Dicker Data (DDR.AX)
-8. Hansen Technologies (HSN.AX)
-9. Growthpoint Properties Australia (GOZ.AX)
-10. Propel Funeral Partners (PFP.AX)
-11. Nick Scali (NCK.AX)
-12. Xero (XRO.AX)
-13. Block Inc (SQ2.AX)
-14. Commonwealth Bank (CBA.AX)
-15. News Corp (NWS.AX)
-16. Sigma Healthcare (SIG.AX)
-17. Supply Network (SNL.AX)
-18. James Hardie Industries (JHX.AX)
-19. PEXA Group (PXA.AX)
+Generate a comprehensive daily stock summary report for {today} for the following 19 Australian stocks IN THIS EXACT ORDER:
+
+1. AUB Group Limited (AUB.AX) - Australian insurance broker
+2. Mineral Resources Limited (MIN.AX) - Mining and resources
+3. Charter Hall Group (CHC.AX) - Commercial property REIT
+4. HUB24 Limited (HUB.AX) - Wealth management platform
+5. Macquarie Group Limited (MQG.AX) - Investment bank
+6. CSL Limited (CSL.AX) - Biopharmaceutical company
+7. Dicker Data Limited (DDR.AX) - IT distributor
+8. Hansen Technologies Limited (HSN.AX) - Software company
+9. Growthpoint Properties Australia (GOZ.AX) - Industrial property REIT
+10. Propel Funeral Partners Limited (PFP.AX) - Funeral services
+11. Nick Scali Limited (NCK.AX) - Furniture retailer
+12. Xero Limited (XRO.AX) - Cloud accounting software
+13. Block Inc (SQ2.AX) - Digital payments (Square)
+14. Commonwealth Bank of Australia (CBA.AX) - Major bank
+15. News Corp (NWS.AX) - Media conglomerate
+16. Sigma Healthcare Limited (SIG.AX) - Pharmacy and healthcare
+17. Supply Network Limited (SNL.AX) - Logistics and supply chain
+18. James Hardie Industries plc (JHX.AX) - Building materials
+19. PEXA Group Limited (PXA.AX) - Property exchange platform
 
 For EACH stock, provide the following sections:
 
@@ -155,15 +157,18 @@ SOURCE QUALITY REQUIREMENTS:
 Focus on information that materially affects: volumes, pricing, customer behavior, margins, competitive position, regulatory changes, industry structure
 
 CRITICAL REQUIREMENTS FOR ALL SECTIONS:
+- Output ONLY the HTML report - no preambles, explanations, or apologies about data limitations
 - Use web search extensively to find current prices, recent ASX announcements, and credible industry news
 - ALL sources must be HYPERLINKED using HTML anchor tags: <a href="URL">Source Name</a>
 - All dates must be specific (not "recently" or "last week")
 - Focus on business fundamentals, not technical chart analysis
 - Maintain consistent professional tone throughout
+- If you cannot find recent news for a stock, state "No material company announcements in the past week" - do NOT apologize or explain data limitations
 
 FORMAT AS PROFESSIONAL HTML EMAIL:
-- Begin with: <h1>Berkholts Stock Summaries - {today}</h1>
+- Begin IMMEDIATELY with: <h1>Berkholts Stock Summaries - {today}</h1>
 - NO text or content above this heading
+- NO preambles about data limitations or real-time access
 - Use <h2> for each stock name and ticker
 - Use <strong> for section headers (PRICE, REASON FOR MOVE, etc.)
 - Use green color (#00AA00) for positive price moves
@@ -173,7 +178,7 @@ FORMAT AS PROFESSIONAL HTML EMAIL:
 - All sources must be clickable hyperlinks
 - Professional styling suitable for email viewing
 
-Begin generating the report now."""
+Begin generating the HTML report NOW.
 
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
