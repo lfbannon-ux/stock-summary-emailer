@@ -4,7 +4,7 @@ Berkholts Daily Stock Summary Emailer - Accurate Data Version
 ==============================================================
 Uses:
 - yfinance: FREE accurate stock prices from Yahoo Finance
-- pyasx: FREE direct ASX announcement links
+- ASX API: Direct calls to ASX.com.au for announcements (no external library needed)
 - Claude API: Only for news analysis (reduced cost)
 
 This gives you:
@@ -17,13 +17,13 @@ import os
 import sys
 import smtplib
 import re
+import requests
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 import anthropic
 
-# FREE libraries for accurate data
+# FREE library for accurate stock prices
 import yfinance as yf
-import pyasx.data.companies as asx_companies
 
 
 # ============================================================================
@@ -55,12 +55,6 @@ STOCKS = [
 def get_stock_price(ticker: str) -> dict:
     """
     Get ACCURATE stock price from Yahoo Finance.
-    
-    Returns dict with:
-    - yesterday_close: Most recent closing price
-    - previous_close: Day before closing price
-    - change_percent: Percentage change
-    - dates: The actual dates for each price
     """
     try:
         stock = yf.Ticker(ticker)
@@ -91,35 +85,50 @@ def get_stock_price(ticker: str) -> dict:
 
 
 # ============================================================================
-# ASX ANNOUNCEMENTS - Using pyasx (FREE & REAL LINKS)
+# ASX ANNOUNCEMENTS - Direct API calls (no external library needed)
 # ============================================================================
+
+ASX_ANNOUNCEMENTS_URL = "https://www.asx.com.au/asx/1/company/{}/announcements?count=20&market_sensitive=false"
+ASX_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json"
+}
+
 
 def get_asx_announcements(asx_code: str, limit: int = 10) -> list:
     """
-    Get REAL ASX announcements with direct PDF links.
-    
-    Returns list of dicts with:
-    - title: Announcement title
-    - url: Direct link to ASX PDF
-    - date: Release date
-    - pages: Number of pages
+    Get announcements directly from ASX API.
+    Returns list of announcements with direct PDF links.
     """
     try:
-        announcements = asx_companies.get_company_announcements(asx_code)
+        url = ASX_ANNOUNCEMENTS_URL.format(asx_code)
+        response = requests.get(url, headers=ASX_HEADERS, timeout=10)
+        
+        if response.status_code != 200:
+            print(f"   ⚠️ ASX API returned status {response.status_code}")
+            return []
+        
+        data = response.json()
         
         results = []
-        for ann in announcements[:limit]:
+        for ann in data.get("data", [])[:limit]:
+            # Build the PDF URL
+            doc_id = ann.get("document_release_date", "").replace("-", "")
+            pdf_url = ann.get("url", "")
+            
             results.append({
-                "title": ann.get("title", "Unknown"),
-                "url": ann.get("url", ""),
-                "date": ann.get("document_date", ann.get("release_date")),
-                "pages": ann.get("num_pages", 0),
+                "title": ann.get("header", "Unknown"),
+                "url": pdf_url,
+                "date": ann.get("document_date", ""),
+                "is_price_sensitive": ann.get("price_sensitive", False),
+                "pages": ann.get("number_of_pages", 0),
                 "size": ann.get("size", "")
             })
         
         return results
+    
     except Exception as e:
-        print(f"   ⚠️ Error fetching ASX announcements for {asx_code}: {e}")
+        print(f"   ⚠️ Error fetching ASX announcements: {e}")
         return []
 
 
@@ -142,7 +151,12 @@ def find_latest_earnings(announcements: list) -> dict:
 def find_latest_price_sensitive(announcements: list) -> dict:
     """Find the most recent price-sensitive announcement."""
     
-    # Price sensitive keywords
+    # First try to find explicitly price-sensitive announcements
+    for ann in announcements:
+        if ann.get("is_price_sensitive"):
+            return ann
+    
+    # Fall back to keyword matching
     sensitive_keywords = [
         "trading update", "guidance", "profit warning", "acquisition",
         "merger", "takeover", "dividend", "capital raising", "placement",
@@ -206,13 +220,21 @@ Say "Not found" if you can't verify something."""
 # HTML GENERATION
 # ============================================================================
 
-def format_date(dt) -> str:
-    """Format datetime object to string."""
-    if dt is None:
+def format_date(date_str) -> str:
+    """Format date string to readable format."""
+    if not date_str:
         return "Unknown"
-    if hasattr(dt, 'strftime'):
+    
+    try:
+        # Try parsing ISO format
+        if "T" in str(date_str):
+            dt = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
+            return dt.strftime("%B %d, %Y")
+        # Try parsing YYYY-MM-DD format
+        dt = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
         return dt.strftime("%B %d, %Y")
-    return str(dt)
+    except:
+        return str(date_str)
 
 
 def generate_stock_html(stock: dict, price_data: dict, announcements: list, analysis: str, stock_num: int) -> str:
@@ -230,9 +252,9 @@ def generate_stock_html(stock: dict, price_data: dict, announcements: list, anal
 <strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};font-weight:bold;">{change_sign}{price_data['change_percent']:.2f}%</span>
 </p>'''
     
-    # Last Price-Sensitive Announcement (from pyasx - REAL LINKS)
+    # Last Price-Sensitive Announcement (from ASX API - REAL LINKS)
     latest_announcement = find_latest_price_sensitive(announcements)
-    if latest_announcement:
+    if latest_announcement and latest_announcement.get('url'):
         ann_html = f'''<p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">LAST PRICE-SENSITIVE ANNOUNCEMENT:</strong><br>
 <strong>Date:</strong> {format_date(latest_announcement.get('date'))}<br>
@@ -242,9 +264,9 @@ def generate_stock_html(stock: dict, price_data: dict, announcements: list, anal
     else:
         ann_html = '<p style="margin:15px 0;"><strong style="color:#2980b9;">LAST PRICE-SENSITIVE ANNOUNCEMENT:</strong> No announcements found</p>'
     
-    # Last Earnings Report (from pyasx - REAL LINKS)
+    # Last Earnings Report (from ASX API - REAL LINKS)
     latest_earnings = find_latest_earnings(announcements)
-    if latest_earnings:
+    if latest_earnings and latest_earnings.get('url'):
         earnings_html = f'''<p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong><br>
 <strong>Date:</strong> {format_date(latest_earnings.get('date'))}<br>
@@ -254,10 +276,11 @@ def generate_stock_html(stock: dict, price_data: dict, announcements: list, anal
     else:
         earnings_html = '<p style="margin:15px 0;"><strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong> No earnings reports found</p>'
     
-    # Recent Announcements List (from pyasx - REAL LINKS)
+    # Recent Announcements List (from ASX API - REAL LINKS)
     recent_ann_html = '<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">RECENT ASX ANNOUNCEMENTS:</strong></p><ul style="margin:5px 0 15px 20px;line-height:1.8;">'
     for ann in announcements[:5]:
-        recent_ann_html += f'<li>{format_date(ann.get("date"))}: <a href="{ann.get("url", "#")}" style="color:#3498db;text-decoration:underline;">{ann.get("title", "Unknown")}</a></li>'
+        if ann.get('url'):
+            recent_ann_html += f'<li>{format_date(ann.get("date"))}: <a href="{ann.get("url", "#")}" style="color:#3498db;text-decoration:underline;">{ann.get("title", "Unknown")}</a></li>'
     recent_ann_html += '</ul>'
     
     # Parse analysis for Industry and Competitive sections
@@ -314,9 +337,8 @@ def parse_analysis_to_html(analysis: str) -> dict:
                 end = start + 500
             
             reason_text = analysis[start:end].strip()
-            # Clean up the text
             reason_text = re.sub(r'^.*?:', '', reason_text, count=1).strip()
-            reason_text = reason_text[:500]  # Limit length
+            reason_text = reason_text[:500]
             
             result['reason_for_move'] = f'<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">REASON FOR MOVE:</strong><br>{reason_text}</p>'
         except:
@@ -332,10 +354,9 @@ def parse_analysis_to_html(analysis: str) -> dict:
             
             industry_text = analysis[start:end].strip()
             
-            # Convert to bullet points
             lines = [l.strip() for l in industry_text.split('\n') if l.strip() and len(l.strip()) > 10]
             if lines:
-                bullets = ''.join([f'<li>{line}</li>' for line in lines[1:4]])  # Skip header, take 3 points
+                bullets = ''.join([f'<li>{line}</li>' for line in lines[1:4]])
                 result['industry_dynamics'] = f'<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">INDUSTRY DYNAMICS:</strong></p><ul style="margin:5px 0 15px 20px;line-height:1.8;">{bullets}</ul>'
         except:
             pass
@@ -348,10 +369,9 @@ def parse_analysis_to_html(analysis: str) -> dict:
             
             competitive_text = analysis[start:end].strip()
             
-            # Convert to bullet points
             lines = [l.strip() for l in competitive_text.split('\n') if l.strip() and len(l.strip()) > 10]
             if lines:
-                bullets = ''.join([f'<li>{line}</li>' for line in lines[1:3]])  # Skip header, take 2 points
+                bullets = ''.join([f'<li>{line}</li>' for line in lines[1:3]])
                 result['competitive_dynamics'] = f'<p style="margin:15px 0;line-height:1.6;"><strong style="color:#2980b9;">COMPETITIVE DYNAMICS:</strong></p><ul style="margin:5px 0 15px 20px;line-height:1.8;">{bullets}</ul>'
         except:
             pass
@@ -382,7 +402,7 @@ Berkholts Stock Summaries - {today}
 
 <p style="color:#7f8c8d;font-size:12px;margin-top:30px;text-align:center;">
 Generated by Berkholts Stock Summary System<br>
-<strong>Prices:</strong> Yahoo Finance (yfinance) | <strong>Announcements:</strong> ASX (pyasx) | <strong>Analysis:</strong> Claude AI
+<strong>Prices:</strong> Yahoo Finance | <strong>Announcements:</strong> ASX.com.au | <strong>Analysis:</strong> Claude AI
 </p>
 
 </td></tr>
@@ -415,13 +435,13 @@ def send_email(html_content: str, recipient: str, smtp_email: str, smtp_password
 # ============================================================================
 
 def main():
-    """Main function - uses yfinance + pyasx + Claude."""
+    """Main function - uses yfinance + ASX API + Claude."""
     
     print("=" * 70)
     print("🚀 Berkholts Daily Stock Summary Emailer")
     print("📊 ACCURATE DATA VERSION")
     print("   • Prices: yfinance (FREE, 100% accurate)")
-    print("   • ASX Links: pyasx (FREE, real PDF links)")
+    print("   • ASX Links: Direct ASX API (FREE, real PDF links)")
     print("   • Analysis: Claude API (reduced usage)")
     print(f"⏰ Started at: {datetime.now()}")
     print("=" * 70)
@@ -473,7 +493,7 @@ def main():
         else:
             print(f"✅ A${price_data['yesterday_close']:.2f} ({price_data['change_percent']:+.2f}%)")
         
-        # 2. Get REAL ASX announcements from pyasx (FREE)
+        # 2. Get REAL ASX announcements from ASX API (FREE)
         print(f"   📢 Fetching ASX announcements...", end=" ")
         announcements = get_asx_announcements(stock['asx_code'])
         print(f"✅ Found {len(announcements)} announcements")
