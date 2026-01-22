@@ -74,9 +74,7 @@ def main():
         client = anthropic.Anthropic(api_key=anthropic_key)
         today = datetime.now().strftime("%B %d, %Y")
         
-        prompt = f"""Generate the HTML stock summary report NOW. Do not explain your process, do not describe what you're doing, do not mention search results or data sources in your response. Your ENTIRE response must be valid HTML starting with <h1> and ending with </body></html>.
-
-Generate a comprehensive daily stock summary report for {today} for these 19 Australian stocks:
+        prompt = f"""Generate a comprehensive daily stock summary report for {today} for these 19 Australian stocks:
 
 1. AUB Group Limited (AUB.AX) - Australian insurance broker
 2. Mineral Resources Limited (MIN.AX) - Mining and resources
@@ -178,15 +176,12 @@ FORMAT AS PROFESSIONAL HTML EMAIL:
 - All sources must be clickable hyperlinks
 - Professional styling suitable for email viewing
 
-YOUR RESPONSE MUST START WITH: <html><head><style>
-YOUR RESPONSE MUST END WITH: </body></html>
-DO NOT include any text before <html> or after </html>
-DO NOT explain your search process or mention data limitations
-Generate the complete HTML report now."""
+Output the complete HTML report."""
 
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=16000,
+            system="You are an HTML report generator. You ONLY output valid HTML. Never explain your process, never describe what you're doing, never mention search results. Your entire response must be pure HTML starting with <html> and ending with </html>. No preambles, no explanations, no meta-commentary.",
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}]
         )
