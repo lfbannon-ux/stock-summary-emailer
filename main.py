@@ -157,23 +157,34 @@ Focus on information that materially affects: volumes, pricing, customer behavio
 CRITICAL REQUIREMENTS FOR ALL SECTIONS:
 - Output ONLY the HTML report - no preambles, explanations, or apologies about data limitations
 - Use web search extensively to find current prices, recent ASX announcements, and credible industry news
-- ALL sources must be HYPERLINKED using HTML anchor tags: <a href="URL">Source Name</a>
+- ALL sources must be HYPERLINKED using proper HTML anchor tags with descriptive text
+- NEVER display raw URLs - always hide them inside anchor tags with readable link text
+- Example: <a href="URL" style="color: #3498db;">Australian Financial Review - January 22, 2026</a>
 - All dates must be specific (not "recently" or "last week")
 - Focus on business fundamentals, not technical chart analysis
 - Maintain consistent professional tone throughout
 - If you cannot find recent news for a stock, state "No material company announcements in the past week" - do NOT apologize or explain data limitations
 
 FORMAT AS PROFESSIONAL HTML EMAIL:
-- Begin IMMEDIATELY with: <h1>Berkholts Stock Summaries - {today}</h1>
+- Begin IMMEDIATELY with: <h1 style="color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px;">Berkholts Stock Summaries - {today}</h1>
 - NO text or content above this heading
 - NO preambles about data limitations or real-time access
-- Use <h2> for each stock name and ticker
-- Use <strong> for section headers (PRICE, REASON FOR MOVE, etc.)
-- Use green color (#00AA00) for positive price moves
-- Use red color (#DD0000) for negative price moves  
-- Use orange color (#FF8800) for [NEW] tags
-- Use proper paragraph spacing and formatting
-- All sources must be clickable hyperlinks
+- Use <h2 style="color: #34495e; margin-top: 30px; border-bottom: 2px solid #95a5a6; padding-bottom: 8px;"> for each stock name and ticker
+- Use <strong style="color: #2980b9;"> for section headers (PRICE, REASON FOR MOVE, etc.)
+- Use <span style="color: #00AA00; font-weight: bold;"> for positive price moves
+- Use <span style="color: #DD0000; font-weight: bold;"> for negative price moves  
+- Use <span style="color: #FF8800; font-weight: bold;">[NEW]</span> for new tags
+- Use <p style="line-height: 1.6; margin: 10px 0;"> for paragraphs
+- Use <ul style="line-height: 1.8;"> for lists
+- All sources must be clickable hyperlinks with style: <a href="URL" style="color: #3498db; text-decoration: none;">Source Name</a>
+- NEVER show raw URLs in angle brackets like <https://...>
+- NEVER show URLs as plain text
+- ALL citations must use this format: <a href="actual-url">Source Name - Date</a>
+- Example CORRECT: <a href="https://announcements.asx.com.au/asxpdf/20251201/pdf/06sr2bsh6yv802.pdf" style="color: #3498db; text-decoration: none;">ASX Announcement - December 1, 2025</a>
+- Example WRONG: <https://announcements.asx.com.au/asxpdf/20251201/pdf/06sr2bsh6yv802.pdf>
+- URLs must ALWAYS be hidden inside anchor tags, never displayed as text
+- Use INLINE STYLES only - no <style> tags or external CSS
+- All formatting must be inline style attributes on each element
 - Professional styling suitable for email viewing
 
 Generate the complete report with ALL 19 stocks. Do not abbreviate or skip any stocks."""
@@ -181,7 +192,7 @@ Generate the complete report with ALL 19 stocks. Do not abbreviate or skip any s
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=32000,
-            system="You are an HTML report generator. You ONLY output valid HTML. Never explain your process, never describe what you're doing, never mention search results. Your entire response must be pure HTML starting with <html> and ending with </html>. No preambles, no explanations, no meta-commentary.",
+            system="You are an HTML report generator. Your response must contain ONLY valid HTML code and absolutely nothing else. Do not include any disclaimers, notes, explanations, or text outside the HTML tags. Your response must start with <html> or <!DOCTYPE html> and end with </html>. Everything you output will be sent directly as an email body. No preambles. No explanations. No meta-commentary. Only HTML.",
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": prompt}]
         )
@@ -191,6 +202,18 @@ Generate the complete report with ALL 19 stocks. Do not abbreviate or skip any s
         for block in message.content:
             if block.type == "text":
                 html_content += block.text
+        
+        # Strip any text before <html> or <!DOCTYPE and after </html>
+        import re
+        # Find the HTML content between tags
+        html_match = re.search(r'(<!DOCTYPE[^>]*>)?\s*<html.*?</html>', html_content, re.DOTALL | re.IGNORECASE)
+        if html_match:
+            html_content = html_match.group(0)
+        else:
+            # If no full HTML structure, look for content starting with <h1>
+            html_match = re.search(r'<h1.*$', html_content, re.DOTALL | re.IGNORECASE)
+            if html_match:
+                html_content = html_match.group(0)
         
         print("✅ Summary generated successfully!")
         print(f"📄 Content length: {len(html_content)} characters")
