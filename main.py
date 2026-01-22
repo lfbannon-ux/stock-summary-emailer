@@ -46,11 +46,14 @@ Today's date is {today}. The "last 7 days" means from January 15, 2026 to Januar
 
 For each company, YOU MUST find and provide ALL of the following:
 
-**CURRENT PRICE & YESTERDAY'S CHANGE**
-Search for: "AUB.AX stock price" or "MIN.AX stock price" to find TODAY'S current closing price
-Calculate YESTERDAY'S CHANGE as: Today's closing price minus Yesterday's closing price
-Example: If today is $31.10 and yesterday was $37.25, then change is -$6.15 (-16.51%)
-Be VERY careful with the math - double check your calculation
+**YESTERDAY'S PRICE MOVEMENT**
+Search for historical stock price data to find:
+1. YESTERDAY'S closing price (January 21, 2026)
+2. The DAY BEFORE YESTERDAY'S closing price (January 20, 2026)
+3. Calculate percentage change: ((Yesterday - Day Before) / Day Before) × 100
+Format: YESTERDAY: A$XX.XX | PREVIOUS DAY: A$YY.YY | CHANGE: +/-X.XX%
+Example: YESTERDAY: A$31.10 | PREVIOUS DAY: A$37.25 | CHANGE: -16.51%
+This shows how the stock moved on the most recent trading day
 
 **REASON FOR MOVE (Last 7 days only)**
 CRITICAL: ONLY include news from the LAST 7 DAYS (from {today} backwards)
@@ -131,7 +134,7 @@ Create HTML with this structure:
 <table width="100%" cellpadding="0" cellspacing="0" border="0">
 <tr>
 <td align="center" style="padding:20px;">
-<table width="900" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #ddd;">
+<table width="1000" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #ddd;">
 <tr>
 <td style="padding:30px;">
 
@@ -140,8 +143,9 @@ Create HTML with this structure:
 <h2 style="color:#34495e;font-size:20px;margin:30px 0 15px 0;padding:0 0 8px 0;border-bottom:2px solid #95a5a6;font-family:Arial,Helvetica,sans-serif;">1. AUB Group Limited (AUB.AX)</h2>
 
 <p style="margin:10px 0;line-height:1.6;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-<strong style="color:#2980b9;">PRICE:</strong> A$XX.XX | 
-<strong style="color:#2980b9;">YESTERDAY:</strong> <span style="color:#00AA00;font-weight:bold;">+A$X.XX (+X.XX%)</span>
+<strong style="color:#2980b9;">YESTERDAY:</strong> A$XX.XX | 
+<strong style="color:#2980b9;">PREVIOUS DAY:</strong> A$YY.YY | 
+<strong style="color:#2980b9;">CHANGE:</strong> <span style="color:#00AA00;font-weight:bold;">+X.XX%</span>
 </p>
 
 <p style="margin:10px 0;line-height:1.6;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
@@ -208,13 +212,16 @@ Create HTML with this structure:
 
 CRITICAL:
 - Use DIRECT URLs from research (no tracking, no redirects)
-- Green for positive: style="color:#00AA00;font-weight:bold;"
-- Red for negative: style="color:#DD0000;font-weight:bold;"
-- All links must have text-decoration:underline
+- Price format: YESTERDAY: A$XX.XX | PREVIOUS DAY: A$YY.YY | CHANGE: +/-X.XX%
+- Yesterday = Jan 21, 2026 closing price
+- Previous Day = Jan 20, 2026 closing price
+- Green for positive change: style="color:#00AA00;font-weight:bold;"
+- Red for negative change: style="color:#DD0000;font-weight:bold;"
+- ALL hyperlinks MUST be proper <a href="URL" style="color:#3498db;text-decoration:underline;">Source Name</a>
+- NEVER use raw URLs like https://... or <https://...>
 - Start with <!DOCTYPE html>, end with </html>
 - No text before or after HTML
-- REASON FOR MOVE: Only include news from last 7 days (after {datetime.now().strftime("%B %d, %Y")} minus 7 days). If no recent news, write "No material company announcements in the past week"
-- Double-check price calculations: Yesterday's change = Today's price - Yesterday's price"""
+- REASON FOR MOVE: Only include news from last 7 days (after January 15, 2026). If no recent news, write "No material company announcements in the past week""""
 
         message2 = client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -233,7 +240,43 @@ CRITICAL:
         if html_match:
             html_content = html_match.group(0)
         
+        # AGGRESSIVE URL FIXING - Fix any broken hyperlinks
+        print("🔧 Fixing hyperlinks...")
+        
+        # Fix angle bracket URLs: <https://...> → proper <a href>
+        def fix_angle_url(match):
+            url = match.group(1)
+            if 'asx.com.au' in url:
+                return f'<a href="{url}" style="color:#3498db;text-decoration:underline;">ASX Announcement</a>'
+            elif 'afr.com' in url:
+                return f'<a href="{url}" style="color:#3498db;text-decoration:underline;">AFR</a>'
+            elif 'bloomberg' in url:
+                return f'<a href="{url}" style="color:#3498db;text-decoration:underline;">Bloomberg</a>'
+            elif 'reuters' in url:
+                return f'<a href="{url}" style="color:#3498db;text-decoration:underline;">Reuters</a>'
+            else:
+                return f'<a href="{url}" style="color:#3498db;text-decoration:underline;">Source</a>'
+        
+        html_content = re.sub(r'<(https?://[^>]+)>', fix_angle_url, html_content)
+        
+        # Fix bare URLs not in anchor tags
+        def fix_bare_urls(text):
+            parts = re.split(r'(href="[^"]*")', text)
+            result = []
+            for i, part in enumerate(parts):
+                if i % 2 == 0:  # Not inside href=""
+                    part = re.sub(
+                        r'(?<!href=")(?<!">)(https?://[^\s<>"]+)',
+                        lambda m: f'<a href="{m.group(0)}" style="color:#3498db;text-decoration:underline;">Source</a>',
+                        part
+                    )
+                result.append(part)
+            return ''.join(result)
+        
+        html_content = fix_bare_urls(html_content)
+        
         print(f"✅ HTML: {len(html_content)} characters")
+        print("✅ Hyperlinks fixed")
         
     except Exception as e:
         print(f"❌ Step 2 error: {e}")
