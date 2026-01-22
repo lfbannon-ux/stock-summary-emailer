@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-Berkholts Daily Stock Summary Emailer - EXPLICIT WEB SEARCH VERSION
-=====================================================================
-Key insight: Claude decides whether to use web search.
-This version explicitly requests web search in the prompt.
+Berkholts Daily Stock Summary Emailer - V3 IMPROVED
+====================================================
+Key improvements:
+1. Separate API calls for each research task (more reliable search triggers)
+2. Explicit validation and fallback handling
+3. Better prompts that acknowledge when data isn't found
+4. Uses ASX company pages (always valid) rather than trying to guess PDF URLs
 """
 
 import os
 import sys
 import smtplib
+import json
 import re
-import requests
 from email.mime.text import MIMEText
-from datetime import datetime, timedelta
+from datetime import datetime
 import anthropic
 import yfinance as yf
 
@@ -22,15 +25,17 @@ STOCKS = [
         "name": "AUB Group Limited",
         "ticker": "AUB.AX",
         "asx_code": "AUB",
-        "industry": "insurance",
-        "competitors": ["Steadfast Group (SDF.AX)", "PSC Insurance (PSI.AX)"]
+        "industry": "insurance broking",
+        "competitors": ["Steadfast Group (SDF.AX)", "PSC Insurance (PSI.AX)"],
+        "asx_url": "https://www.asx.com.au/markets/company/AUB"
     },
     {
         "name": "Mineral Resources Limited",
         "ticker": "MIN.AX",
         "asx_code": "MIN",
-        "industry": "mining",
-        "competitors": ["Pilbara Minerals (PLS.AX)", "Fortescue Metals (FMG.AX)"]
+        "industry": "mining services and lithium",
+        "competitors": ["Pilbara Minerals (PLS.AX)", "Fortescue Metals (FMG.AX)"],
+        "asx_url": "https://www.asx.com.au/markets/company/MIN"
     },
 ]
 
@@ -62,126 +67,387 @@ def get_stock_price(ticker: str) -> dict:
         return {"error": str(e)}
 
 
-def research_and_format_stock(client: anthropic.Anthropic, stock: dict, price_data: dict, stock_num: int, today_str: str) -> str:
+def call_claude_with_search(client: anthropic.Anthropic, prompt: str, max_searches: int = 5) -> str:
     """
-    Single API call that does both research AND formatting.
-    Uses very explicit instructions to trigger web search.
+    Call Claude API with web search tool enabled.
+    Returns the text response.
+    """
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": max_searches
+            }],
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        # Extract text from response
+        result = ""
+        for block in response.content:
+            if hasattr(block, 'text'):
+                result += block.text
+        
+        return result.strip() if result else "NO_RESPONSE"
+        
+    except Exception as e:
+        return f"ERROR: {str(e)}"
+
+
+def research_announcements(client: anthropic.Anthropic, stock: dict) -> dict:
+    """
+    Research the company's recent ASX announcements.
+    Returns structured data about announcements.
+    """
+    prompt = f"""Search the web for recent ASX announcements from {stock['name']} (ASX: {stock['asx_code']}).
+
+Search for: "{stock['asx_code']} ASX announcement 2025 2026"
+Also search: "{stock['name']} announcement investor"
+
+After searching, provide the following in JSON format only (no other text):
+{{
+    "last_announcement": {{
+        "date": "the date or 'Not found'",
+        "title": "title of the announcement or 'Not found'",
+        "summary": "1-2 sentence summary with specific numbers if available, or 'Not found'",
+        "source_url": "actual URL from search results, or null if not found"
+    }},
+    "price_sensitive_news": {{
+        "found": true or false,
+        "description": "what news might explain recent price moves, or 'No material news found in last 3 days'",
+        "source_url": "URL or null"
+    }}
+}}
+
+IMPORTANT RULES:
+- Only include information you actually found in search results
+- If you can't find something, say "Not found" - do NOT make up dates or details
+- For URLs, only use real URLs from your search results - do NOT invent URLs
+- If no announcement source URL is found, use null (the system will use the ASX company page instead)
+"""
+    
+    result = call_claude_with_search(client, prompt, max_searches=3)
+    
+    # Try to parse JSON from response
+    try:
+        # Find JSON in the response (might be wrapped in markdown)
+        json_match = re.search(r'\{[\s\S]*\}', result)
+        if json_match:
+            data = json.loads(json_match.group())
+            return data
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    
+    # Return fallback structure
+    return {
+        "last_announcement": {
+            "date": "Not found",
+            "title": "Not found",
+            "summary": "Unable to retrieve announcement data",
+            "source_url": None
+        },
+        "price_sensitive_news": {
+            "found": False,
+            "description": "No material news found in last 3 days",
+            "source_url": None
+        }
+    }
+
+
+def research_earnings(client: anthropic.Anthropic, stock: dict) -> dict:
+    """
+    Research the company's last earnings report.
+    """
+    prompt = f"""Search the web for {stock['name']} (ASX: {stock['asx_code']}) earnings results and financial reports.
+
+Search for: "{stock['asx_code']} earnings results FY2025 revenue profit"
+Also search: "{stock['name']} half year results annual report"
+
+After searching, provide the following in JSON format only (no other text):
+{{
+    "report_type": "Annual/Half-Year/Quarterly or 'Not found'",
+    "report_date": "date of the report or 'Not found'",
+    "period": "e.g., 'FY2025' or 'H1 FY2025' or 'Not found'",
+    "revenue": "revenue figure with currency or 'Not found'",
+    "npat": "net profit after tax or 'Not found'",
+    "ebitda": "EBITDA if available or 'Not found'",
+    "eps": "earnings per share or 'Not found'",
+    "dividend": "dividend info or 'Not found'",
+    "guidance": "any forward guidance mentioned or 'None mentioned'",
+    "source_url": "URL from search results or null"
+}}
+
+IMPORTANT: Only report numbers you actually found. Do NOT make up financial figures.
+"""
+    
+    result = call_claude_with_search(client, prompt, max_searches=3)
+    
+    try:
+        json_match = re.search(r'\{[\s\S]*\}', result)
+        if json_match:
+            data = json.loads(json_match.group())
+            return data
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    
+    return {
+        "report_type": "Not found",
+        "report_date": "Not found",
+        "period": "Not found",
+        "revenue": "Not found",
+        "npat": "Not found",
+        "ebitda": "Not found",
+        "eps": "Not found",
+        "dividend": "Not found",
+        "guidance": "None mentioned",
+        "source_url": None
+    }
+
+
+def research_industry(client: anthropic.Anthropic, stock: dict) -> dict:
+    """
+    Research industry dynamics with specific data points.
+    """
+    prompt = f"""Search for recent news and data about the Australian {stock['industry']} industry.
+
+Search for: "Australian {stock['industry']} industry 2025 2026"
+Also search: "{stock['industry']} market trends Australia"
+
+After searching, provide the following in JSON format only (no other text):
+{{
+    "data_points": [
+        {{
+            "fact": "A specific statistic, trend, or data point with numbers",
+            "source": "Name of the source (e.g., 'Australian Financial Review', 'IBISWorld')",
+            "source_url": "URL or null",
+            "relevance": "How this relates to {stock['name']}"
+        }},
+        {{
+            "fact": "Another specific data point",
+            "source": "Source name",
+            "source_url": "URL or null",
+            "relevance": "Relevance to the company"
+        }}
+    ]
+}}
+
+IMPORTANT:
+- Provide 2-3 specific data points with actual numbers/percentages
+- Only include facts you actually found - do NOT make up statistics
+- Include the source name for each fact
+"""
+    
+    result = call_claude_with_search(client, prompt, max_searches=3)
+    
+    try:
+        json_match = re.search(r'\{[\s\S]*\}', result)
+        if json_match:
+            data = json.loads(json_match.group())
+            return data
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    
+    return {
+        "data_points": [
+            {
+                "fact": "No specific industry data found in recent search",
+                "source": "N/A",
+                "source_url": None,
+                "relevance": "N/A"
+            }
+        ]
+    }
+
+
+def research_competitors(client: anthropic.Anthropic, stock: dict) -> dict:
+    """
+    Research competitor news and announcements.
+    """
+    competitors_str = ", ".join(stock['competitors'])
+    
+    prompt = f"""Search for recent news about competitors of {stock['name']} in the Australian market.
+    
+Key competitors: {competitors_str}
+
+Search for: "{stock['competitors'][0]} ASX announcement 2025"
+Also search: "{stock['competitors'][1] if len(stock['competitors']) > 1 else stock['competitors'][0]} news Australia"
+
+After searching, provide the following in JSON format only (no other text):
+{{
+    "competitor_news": [
+        {{
+            "competitor": "Company name",
+            "news": "Specific news item or announcement with details",
+            "date": "Date or approximate timeframe",
+            "implications": "What this might mean for {stock['name']}",
+            "source_url": "URL or null"
+        }}
+    ]
+}}
+
+IMPORTANT:
+- Only include news you actually found in search results
+- Be specific about what competitors announced or reported
+- If no recent competitor news found, return an empty list
+"""
+    
+    result = call_claude_with_search(client, prompt, max_searches=3)
+    
+    try:
+        json_match = re.search(r'\{[\s\S]*\}', result)
+        if json_match:
+            data = json.loads(json_match.group())
+            return data
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    
+    return {
+        "competitor_news": []
+    }
+
+
+def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnings: dict, 
+                      industry: dict, competitors: dict, stock_num: int) -> str:
+    """
+    Format all researched data into HTML.
+    Uses fallback URLs when real URLs aren't available.
     """
     
-    # Build price HTML first (from yfinance - accurate)
+    # Price section
     if price_data.get('error'):
-        price_section = f"Price data unavailable: {price_data['error']}"
+        price_html = f'<span style="color:#e74c3c;">Price data unavailable: {price_data["error"]}</span>'
     else:
         change_color = "#27ae60" if price_data['change_percent'] >= 0 else "#e74c3c"
         change_sign = "+" if price_data['change_percent'] >= 0 else ""
-        price_section = f"""YESTERDAY ({price_data['yesterday_date']}): A${price_data['yesterday_close']:.2f}
-PREVIOUS ({price_data['previous_date']}): A${price_data['previous_close']:.2f}
-CHANGE: {change_sign}{price_data['change_percent']:.2f}%"""
-
-    fallback_url = f"https://www.asx.com.au/markets/company/{stock['asx_code']}"
+        price_html = f"""<strong style="color:#2980b9;">YESTERDAY ({price_data['yesterday_date']}):</strong> A${price_data['yesterday_close']:.2f} | 
+<strong style="color:#2980b9;">PREVIOUS ({price_data['previous_date']}):</strong> A${price_data['previous_close']:.2f} | 
+<strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};">{change_sign}{price_data['change_percent']:.2f}%</span>"""
     
-    prompt = f"""I need you to research {stock['name']} (ASX: {stock['asx_code']}) using web search and then create an HTML email section.
-
-IMPORTANT: You MUST use web search for this task. Search the web NOW.
-
-STEP 1 - SEARCH THE WEB FOR EACH OF THESE:
-Search 1: "{stock['name']} ASX announcement December 2025 January 2026"
-Search 2: "{stock['name']} earnings results FY25 revenue profit"
-Search 3: "Australian {stock['industry']} industry trends 2025 2026"
-Search 4: "{stock['competitors'][0]} ASX announcement 2026"
-
-STEP 2 - CREATE HTML OUTPUT:
-After searching, create an HTML section with the information you found.
-
-PRICE DATA (already provided - do not search for this):
-{price_section}
-
-Create HTML output with this exact structure:
-
+    # Reason for move
+    news = announcements.get('price_sensitive_news', {})
+    if news.get('found'):
+        reason_text = news.get('description', 'No specific catalyst identified')
+        if news.get('source_url'):
+            reason_text += f' <a href="{news["source_url"]}" style="color:#3498db;">[Source]</a>'
+    else:
+        reason_text = news.get('description', 'No material announcements in the past 3 days that would explain the price movement.')
+    
+    # Last announcement
+    ann = announcements.get('last_announcement', {})
+    ann_url = ann.get('source_url') or stock['asx_url']
+    ann_date = ann.get('date', 'Not found')
+    ann_title = ann.get('title', 'Not found')
+    ann_summary = ann.get('summary', 'Unable to retrieve')
+    
+    # Earnings
+    earn = earnings
+    earn_url = earn.get('source_url') or stock['asx_url']
+    
+    earnings_parts = []
+    if earn.get('report_type') and earn.get('report_type') != 'Not found':
+        earnings_parts.append(f"<strong>Report:</strong> {earn.get('report_type')} ({earn.get('period', 'N/A')})")
+    if earn.get('report_date') and earn.get('report_date') != 'Not found':
+        earnings_parts.append(f"<strong>Date:</strong> {earn.get('report_date')}")
+    if earn.get('revenue') and earn.get('revenue') != 'Not found':
+        earnings_parts.append(f"<strong>Revenue:</strong> {earn.get('revenue')}")
+    if earn.get('npat') and earn.get('npat') != 'Not found':
+        earnings_parts.append(f"<strong>NPAT:</strong> {earn.get('npat')}")
+    if earn.get('ebitda') and earn.get('ebitda') != 'Not found':
+        earnings_parts.append(f"<strong>EBITDA:</strong> {earn.get('ebitda')}")
+    if earn.get('eps') and earn.get('eps') != 'Not found':
+        earnings_parts.append(f"<strong>EPS:</strong> {earn.get('eps')}")
+    if earn.get('dividend') and earn.get('dividend') != 'Not found':
+        earnings_parts.append(f"<strong>Dividend:</strong> {earn.get('dividend')}")
+    if earn.get('guidance') and earn.get('guidance') != 'None mentioned':
+        earnings_parts.append(f"<strong>Guidance:</strong> {earn.get('guidance')}")
+    
+    if not earnings_parts:
+        earnings_html = "Earnings data not found in recent search"
+    else:
+        earnings_html = "<br>".join(earnings_parts)
+    
+    # Industry dynamics
+    ind_points = industry.get('data_points', [])
+    if ind_points:
+        ind_items = []
+        for point in ind_points:
+            item = point.get('fact', '')
+            if point.get('source') and point.get('source') != 'N/A':
+                if point.get('source_url'):
+                    item += f' <a href="{point["source_url"]}" style="color:#3498db;">({point["source"]})</a>'
+                else:
+                    item += f' ({point["source"]})'
+            if item:
+                ind_items.append(f'<li>{item}</li>')
+        industry_html = "\n".join(ind_items) if ind_items else "<li>No specific industry data found</li>"
+    else:
+        industry_html = "<li>No specific industry data found</li>"
+    
+    # Competitor dynamics
+    comp_news = competitors.get('competitor_news', [])
+    if comp_news:
+        comp_items = []
+        for news_item in comp_news:
+            item = f"<strong>{news_item.get('competitor', 'Unknown')}:</strong> {news_item.get('news', '')}"
+            if news_item.get('date'):
+                item += f" ({news_item.get('date')})"
+            if news_item.get('source_url'):
+                item += f' <a href="{news_item["source_url"]}" style="color:#3498db;">[Source]</a>'
+            if news_item.get('implications'):
+                item += f"<br><em>Implications: {news_item.get('implications')}</em>"
+            comp_items.append(f'<li>{item}</li>')
+        competitor_html = "\n".join(comp_items)
+    else:
+        competitor_html = "<li>No recent competitor announcements found in the last 2 weeks</li>"
+    
+    # Assemble HTML
+    html = f"""
 <h2 style="color:#34495e;margin-top:30px;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
 {stock_num}. {stock['name']} ({stock['ticker']})
 </h2>
 
 <p style="margin:10px 0;line-height:1.6;">
-<strong style="color:#2980b9;">YESTERDAY ({price_data.get('yesterday_date', 'N/A')}):</strong> A${price_data.get('yesterday_close', 'N/A')} | 
-<strong style="color:#2980b9;">PREVIOUS ({price_data.get('previous_date', 'N/A')}):</strong> A${price_data.get('previous_close', 'N/A')} | 
-<strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};">{change_sign}{price_data.get('change_percent', 0):.2f}%</span>
+{price_html}
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">REASON FOR MOVE:</strong><br>
-[What you found from Search 1 - any recent news. If nothing found, write "No material announcements in the past week"]
+{reason_text}
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">LAST PRICE-SENSITIVE ANNOUNCEMENT:</strong><br>
-<strong>Date:</strong> [from search]<br>
-<strong>Type:</strong> [from search]<br>
-<strong>Summary:</strong> [from search - include numbers]<br>
-<strong>Source:</strong> <a href="[URL from search or {fallback_url}]" style="color:#3498db;">ASX Announcement</a>
+<strong>Date:</strong> {ann_date}<br>
+<strong>Title:</strong> {ann_title}<br>
+<strong>Summary:</strong> {ann_summary}<br>
+<strong>Source:</strong> <a href="{ann_url}" style="color:#3498db;">ASX Company Page</a>
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong><br>
-[Date, revenue, profit, EPS, dividend from Search 2]<br>
-<strong>Source:</strong> <a href="[URL or {fallback_url}]" style="color:#3498db;">ASX Announcement</a>
+{earnings_html}<br>
+<strong>Source:</strong> <a href="{earn_url}" style="color:#3498db;">ASX Company Page</a>
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">INDUSTRY DYNAMICS:</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
-<li>[Point 1 from Search 3 with <a href="URL" style="color:#3498db;">Source</a>]</li>
-<li>[Point 2 with source]</li>
-<li>[Point 3 with source]</li>
+{industry_html}
 </ul>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">COMPETITIVE DYNAMICS:</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
-<li>[Competitor news from Search 4 with <a href="URL" style="color:#3498db;">Source</a>]</li>
-<li>[Another competitor point]</li>
+{competitor_html}
 </ul>
 
 <hr style="border:none;border-top:1px solid #ecf0f1;margin:30px 0;">
-
-Output ONLY the HTML code, nothing else. Use real URLs from your search results."""
-
-    try:
-        print(f"      Calling Claude API with web_search tool...")
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4000,
-            tools=[{
-                "type": "web_search_20250305", 
-                "name": "web_search",
-                "max_uses": 10  # Allow multiple searches
-            }],
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        # Log what type of response we got
-        print(f"      Response stop_reason: {response.stop_reason}")
-        print(f"      Response content blocks: {len(response.content)}")
-        
-        # Extract the text content
-        result = ""
-        for block in response.content:
-            block_type = getattr(block, 'type', 'unknown')
-            print(f"      Block type: {block_type}")
-            if hasattr(block, 'text'):
-                result += block.text
-        
-        if not result:
-            print("      ⚠️ No text content in response!")
-            return f"<h2>{stock['name']} - No content generated</h2><hr>"
-        
-        return result
-    
-    except Exception as e:
-        print(f"      ❌ API Error: {str(e)}")
-        return f"<h2>{stock['name']} - Error: {str(e)}</h2><hr>"
+"""
+    return html
 
 
 def wrap_in_template(content: str, today: str) -> str:
@@ -205,7 +471,8 @@ Berkholts Stock Summaries - {today}
 
 <p style="color:#7f8c8d;font-size:12px;margin-top:30px;text-align:center;">
 Generated by Berkholts Stock Summary System<br>
-Prices: Yahoo Finance | Analysis: Claude AI with Web Search
+Prices: Yahoo Finance | Research: Claude AI with Web Search<br>
+Note: ASX Company Page links provided for verification. Click to view official announcements.
 </p>
 
 </td></tr>
@@ -230,7 +497,7 @@ def send_email(html: str, recipient: str, smtp_email: str, smtp_password: str, s
 
 def main():
     print("=" * 70)
-    print("🚀 Berkholts Stock Emailer - EXPLICIT WEB SEARCH VERSION")
+    print("🚀 Berkholts Stock Emailer - V3 IMPROVED (Multi-Step Research)")
     print(f"⏰ Started: {datetime.now()}")
     print("=" * 70)
     
@@ -263,7 +530,7 @@ def main():
         print(f"📊 STOCK {i}/{len(STOCKS)}: {stock['name']}")
         print("=" * 70)
         
-        # Get price (yfinance)
+        # Step 1: Get price (yfinance - always accurate)
         print("   💰 Getting price...", end=" ")
         price = get_stock_price(stock['ticker'])
         if price.get('error'):
@@ -271,11 +538,36 @@ def main():
         else:
             print(f"✅ A${price['yesterday_close']:.2f} ({price['change_percent']:+.2f}%)")
         
-        # Research and format in one call
-        print("   🔍 Researching and formatting...")
-        stock_html = research_and_format_stock(client, stock, price, i, today_str)
+        # Step 2: Research announcements (separate API call)
+        print("   📢 Researching announcements...", end=" ")
+        announcements = research_announcements(client, stock)
+        ann_status = "✅" if announcements.get('last_announcement', {}).get('date') != 'Not found' else "⚠️"
+        print(ann_status)
+        
+        # Step 3: Research earnings (separate API call)
+        print("   💹 Researching earnings...", end=" ")
+        earnings = research_earnings(client, stock)
+        earn_status = "✅" if earnings.get('report_type') != 'Not found' else "⚠️"
+        print(earn_status)
+        
+        # Step 4: Research industry (separate API call)
+        print("   🏭 Researching industry...", end=" ")
+        industry = research_industry(client, stock)
+        ind_status = "✅" if len(industry.get('data_points', [])) > 0 else "⚠️"
+        print(ind_status)
+        
+        # Step 5: Research competitors (separate API call)
+        print("   🏁 Researching competitors...", end=" ")
+        competitors = research_competitors(client, stock)
+        comp_status = "✅" if len(competitors.get('competitor_news', [])) > 0 else "⚠️"
+        print(comp_status)
+        
+        # Step 6: Format HTML
+        print("   📝 Formatting HTML...", end=" ")
+        stock_html = format_stock_html(stock, price, announcements, earnings, industry, competitors, i)
+        print("✅")
+        
         all_html += stock_html
-        print("   ✅ Done!")
     
     # Final assembly
     print(f"\n📧 Assembling email...")
