@@ -42,30 +42,37 @@ def main():
 1. AUB Group Limited (AUB.AX) - Insurance broker
 2. Mineral Resources Limited (MIN.AX) - Mining and resources
 
-For each company, find and provide:
+For each company, YOU MUST find and provide ALL of the following:
 
 **CURRENT PRICE & YESTERDAY'S CHANGE**
+Search for current ASX stock price
 
 **REASON FOR MOVE (Last 7 days only)**
-Material news or announcements from last 7 days with specific dates
+Material news or announcements from last 7 days with specific dates and hyperlinked sources
 
 **COMPANY DEVELOPMENTS (Last 7 days only)**
-New developments from past week with dates and sources
+New developments from past week with dates and hyperlinked sources
 
 **LAST COMPANY ANNOUNCEMENT**
 Search: site:asx.com.au [ticker] announcement (focus on price sensitive announcements)
-Most recent material ASX announcement with date, summary, and URL
+Find the most recent material ASX announcement
+Provide: date, summary with specific numbers, and ASX announcement URL
 
-**LAST EARNINGS REPORT**
-Last time the company reported either annual, half-yearly, quarterly or trading update & what that includes
+**LAST EARNINGS REPORT** ⚠️ MANDATORY - DO NOT SKIP
+Search: site:asx.com.au [ticker] "financial report" OR "trading update" OR "quarterly"
+Find the last time the company reported: Annual Report, Half-Yearly Report, Quarterly Report, or Trading Update
+Provide: date, type of report, key financial metrics (revenue, profit, guidance), and ASX announcement URL
+This is a REQUIRED section - you must find this information
 
 **INDUSTRY/COMPETITIVE DYNAMICS (Last month)**
-4 data points with dates, hard data, and credible sources (Trade magazines, reputable newspapers: WSJ, FT, AFR, Bloomberg, Reuters, government data, competitor filings or announcements)
-Exclude: Motley Fool, Simply Wall St, TradingView and any other unsophisticated publications
+Find EXACTLY 4 data points, each with:
+- Specific date (month and year)
+- Hard data (percentages, dollar amounts, volumes, growth rates)
+- Hyperlinked source from credible publications: Trade magazines, WSJ, FT, AFR, Bloomberg, Reuters, government data, competitor filings
+EXCLUDE: Motley Fool, Simply Wall St, TradingView and any unsophisticated publications
+CRITICAL: Each data point MUST have a specific URL that you can hyperlink
 
-FOR EVERYTHING - MAKE SURE THERE IS A SOURCE THAT IS HYPERLINKED
-
-Research thoroughly."""
+Research thoroughly. Every piece of information needs a source URL."""
 
         message1 = client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -185,13 +192,56 @@ Start with <!DOCTYPE html> and end with </html>. Nothing before or after."""
             if block.type == "text":
                 html_content += block.text
         
-        # Clean
+        # AGGRESSIVE POST-PROCESSING TO FIX URLS
         import re
+        
+        # Step 1: Clean HTML extraction
         html_match = re.search(r'(<!DOCTYPE[^>]*>)?\s*<html.*?</html>', html_content, re.DOTALL | re.IGNORECASE)
         if html_match:
             html_content = html_match.group(0)
         
+        # Step 2: Fix SendGrid tracking URLs and angle bracket URLs
+        # <https://u59134112.ct.sendgrid.net/...> → <a href="...">ASX Announcement</a>
+        def fix_angle_url(match):
+            url = match.group(1)
+            if 'asx.com.au' in url or 'sendgrid' in url:
+                link_text = 'ASX Announcement'
+            elif 'afr.com' in url:
+                link_text = 'AFR'
+            elif 'bloomberg' in url:
+                link_text = 'Bloomberg'
+            elif 'reuters' in url:
+                link_text = 'Reuters'
+            elif 'wsj.com' in url:
+                link_text = 'WSJ'
+            elif 'ft.com' in url:
+                link_text = 'Financial Times'
+            else:
+                link_text = 'Source'
+            return f'<a href="{url}" style="color:#3498db;text-decoration:none;">{link_text}</a>'
+        
+        html_content = re.sub(r'<(https://[^>]+)>', fix_angle_url, html_content)
+        
+        # Step 3: Fix any remaining bare URLs (not in href or angle brackets)
+        def fix_bare_urls(text):
+            # Don't replace URLs already in href=""
+            parts = re.split(r'(href="[^"]*")', text)
+            result = []
+            for i, part in enumerate(parts):
+                if i % 2 == 0:  # Not inside href=""
+                    # Replace standalone https:// URLs
+                    part = re.sub(
+                        r'(?<!href=")(?<!">)(https://[^\s<>"]+)',
+                        lambda m: f'<a href="{m.group(0)}" style="color:#3498db;text-decoration:none;">Source</a>',
+                        part
+                    )
+                result.append(part)
+            return ''.join(result)
+        
+        html_content = fix_bare_urls(html_content)
+        
         print(f"✅ HTML: {len(html_content)} characters")
+        print("✅ All URLs converted to proper hyperlinks")
         
     except Exception as e:
         print(f"❌ Step 2 error: {e}")
@@ -211,14 +261,18 @@ Start with <!DOCTYPE html> and end with </html>. Nothing before or after."""
         for recipient in recipient_emails:
             print(f"📤 {recipient}...")
             
-            mail = Mail(
-                from_email=Email(from_email),
-                to_emails=To(recipient),
-                subject=subject,
-                html_content=Content("text/html", html_content)
+            from sendgrid.helpers.mail import HtmlContent
+            
+            message = Mail(
+                from_email=from_email,
+                to_emails=recipient,
+                subject=subject
             )
             
-            response = sg.client.mail.send.post(request_body=mail.get())
+            # Set HTML content explicitly (no plain text version)
+            message.add_content(HtmlContent(html_content))
+            
+            response = sg.client.mail.send.post(request_body=message.get())
             print(f"   ✅ Status: {response.status_code}")
         
         print("\n✅ COMPLETE!")
