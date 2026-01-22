@@ -46,30 +46,28 @@ def main():
 2. Mineral Resources Limited (MIN.AX)
 
 ═══════════════════════════════════════════════════════════
-SECTION 1: PRICE DATA (MANDATORY - FETCH YAHOO FINANCE PAGE)
+SECTION 1: PRICE DATA (MANDATORY - SEARCH YAHOO FINANCE)
 ═══════════════════════════════════════════════════════════
 
-You MUST use web_fetch tool to retrieve the Yahoo Finance historical data page:
+For EACH stock:
+1. Search: "AUB.AX Yahoo Finance historical prices" (or MIN.AX)
+2. Look for Yahoo Finance results showing historical data table
+3. Find the most recent 2 trading days' CLOSE prices
+4. Report the EXACT numbers you find
 
-For AUB.AX: Use web_fetch on https://au.finance.yahoo.com/quote/AUB.AX/history/
-For MIN.AX: Use web_fetch on https://au.finance.yahoo.com/quote/MIN.AX/history/
+The Yahoo Finance historical data shows a table like:
+Date          | Close*
+Jan 21, 2026  | 31.10
+Jan 20, 2026  | 37.25
 
-Look at the historical prices table in the fetched page.
-Find the most recent 2 complete trading days.
-Report the CLOSE prices from the table.
+You MUST report:
+- Source: Yahoo Finance Historical Data
+- Yesterday ({yesterday}) Close: A$XX.XX
+- Previous Day ({day_before}) Close: A$YY.YY  
+- Change: Calculate ((Yesterday - Previous) / Previous) × 100 = X.XX%
 
-Example from the table:
-Date          Open    High    Low     Close*   Adj Close**  Volume
-Jan 21, 2026  31.50   31.80   31.00   31.10    31.10       X
-Jan 20, 2026  37.00   37.50   36.80   37.25    37.25       X
-
-Report:
-- Yesterday Close (Jan 21): A$31.10
-- Previous Day Close (Jan 20): A$37.25
-- Change: ((31.10 - 37.25) / 37.25) × 100 = -16.51%
-
-⚠️ YOU MUST USE WEB_FETCH TO GET THE ACTUAL PAGE
-⚠️ DO NOT GUESS - Only use data from the fetched page
+⚠️ CRITICAL: Search for Yahoo Finance and use the ACTUAL close prices shown
+⚠️ If you cannot find Yahoo Finance data, search "site:au.finance.yahoo.com AUB.AX"
 
 ═══════════════════════════════════════════════════════════
 SECTION 2: REASON FOR MOVE (Last 7 days: {week_ago} to {today})
@@ -77,7 +75,7 @@ SECTION 2: REASON FOR MOVE (Last 7 days: {week_ago} to {today})
 
 Search for news from last 7 days ONLY.
 If NO news from last 7 days: "No material company announcements in the past week"
-Include hyperlinked source
+Include hyperlinked source if news found
 
 ═══════════════════════════════════════════════════════════
 SECTION 3: COMPANY DEVELOPMENTS (Last 7 days only)
@@ -91,58 +89,80 @@ SECTION 4: LAST PRICE-SENSITIVE ANNOUNCEMENT
 
 Search: "site:asx.com.au [ticker] guidance" OR "trading update" OR "profit"
 Find most recent PRICE-SENSITIVE announcement
+
 MUST include:
 - Date
-- Summary with SPECIFIC FINANCIAL GUIDANCE NUMBERS if given (e.g., "FY26 NPAT guidance of $215-227M")
-- Full ASX PDF URL
+- Summary with SPECIFIC FINANCIAL GUIDANCE NUMBERS if provided
+  Example: "FY26 NPAT guidance of A$215-227M representing 7.4-13.4% growth"
+- Full ASX PDF URL from search results
 
-⚠️ Be PRESCRIPTIVE about financial guidance - include the actual numbers
+⚠️ Be PRESCRIPTIVE - include actual dollar amounts and percentages from the announcement
 
 ═══════════════════════════════════════════════════════════
 SECTION 5: LAST EARNINGS REPORT
 ═══════════════════════════════════════════════════════════
 
-Search: "site:asx.com.au [ticker] results"
-Find last financial results
-MUST include KEY NUMBERS:
-- Revenue growth: X% to $XXM
-- NPAT/Profit growth: X% to $XXM  
-- EBITDA margin: X%
-- EPS growth: X% to $X.XX
-- Dividend: X cents per share
+Search: "site:asx.com.au [ticker] annual results" OR "half year results"
+Find last financial results announcement
 
-Full ASX PDF URL
+MUST include SPECIFIC KEY NUMBERS:
+- Revenue: A$XXM (up/down X%)
+- NPAT/Profit: A$XXM (up/down X%)
+- EBITDA margin: X.X%
+- EPS: A$X.XX (up/down X%)
+- Dividend: X.X cents per share
 
-═══════════════════════════════════════════════════════════
-SECTION 6: INDUSTRY DYNAMICS (3 points - SEPARATE FROM COMPETITORS)
-═══════════════════════════════════════════════════════════
+Full ASX PDF URL from search results
 
-Find 3 points about THE INDUSTRY (not competitors):
-- Market trends, regulatory changes, industry-wide data
-- Each with date, numbers, real URL
-
-⚠️ This section is about INDUSTRY, not individual competitors
+⚠️ Include the ACTUAL numbers from the announcement, not generic descriptions
 
 ═══════════════════════════════════════════════════════════
-SECTION 7: COMPETITIVE DYNAMICS (2 points - COMPETITOR NEWS ONLY)
+SECTION 6: INDUSTRY DYNAMICS (3 points - INDUSTRY ONLY)
 ═══════════════════════════════════════════════════════════
 
-Find 2 points about COMPETITOR companies:
-- Specific competitor announcements, results
-- Each with date and real URL
+Find 3 points about THE INDUSTRY/MARKET (NOT individual competitors):
+- Market-wide trends, regulatory changes, industry statistics
+- Each with: Date, hard numbers, real URL
 
-⚠️ This section is about COMPETITORS, not general industry
-⚠️ If no competitor news: "No material competitor developments to report"
+Examples of INDUSTRY topics:
+- "Australian insurance premiums rose 8.5% to $47B" 
+- "Mining sector iron ore production up 2.3%"
+- "New regulations affecting insurance brokers"
 
-Research thoroughly using web_search and web_fetch."""
+⚠️ This is about the INDUSTRY, not specific competitor companies
+
+═══════════════════════════════════════════════════════════
+SECTION 7: COMPETITIVE DYNAMICS (2 points - COMPETITORS ONLY)
+═══════════════════════════════════════════════════════════
+
+Find 2 points about SPECIFIC COMPETITOR COMPANIES:
+- Name the competitor company
+- Their announcements, results, strategic moves
+- Each with: Date, company name, specific info, real URL
+
+Examples of COMPETITOR topics:
+- "Steadfast Group reported 11% profit growth to $89M"
+- "Pilbara Minerals increased production 15% to 195kt"
+
+⚠️ This is about NAMED COMPETITORS, not general industry trends
+⚠️ If no competitor news found: "No material competitor developments to report"
+
+═══════════════════════════════════════════════════════════
+🚨 CRITICAL RULES 🚨
+═══════════════════════════════════════════════════════════
+
+1. PRICE DATA: Must come from Yahoo Finance search results
+2. GUIDANCE: Must include specific dollar amounts and percentages  
+3. EARNINGS: Must include specific numbers (revenue, profit, margins, etc.)
+4. URLS: Every URL must be from your actual search results - NO FAKE URLS
+5. SECTIONS 6 & 7: Completely separate - INDUSTRY vs COMPETITORS
+
+Research thoroughly using web_search."""
 
         message1 = client.messages.create(
-            model="claude-opus-4-20250514",  # Changed to Opus 4.5
+            model="claude-opus-4-20250514",
             max_tokens=25000,
-            tools=[
-                {"type": "web_search_20250305", "name": "web_search"},
-                {"type": "web_fetch_20250305", "name": "web_fetch"}
-            ],
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": step1_prompt}]
         )
         
