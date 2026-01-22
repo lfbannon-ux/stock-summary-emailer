@@ -70,7 +70,7 @@ def get_stock_price(ticker: str) -> dict:
 def call_claude_with_search(client: anthropic.Anthropic, prompt: str, max_searches: int = 5) -> str:
     """
     Call Claude API with web search tool enabled.
-    Returns the text response.
+    Returns the text response. Always returns a string, never None.
     """
     try:
         response = client.messages.create(
@@ -87,7 +87,7 @@ def call_claude_with_search(client: anthropic.Anthropic, prompt: str, max_search
         # Extract text from response
         result = ""
         for block in response.content:
-            if hasattr(block, 'text'):
+            if hasattr(block, 'text') and block.text is not None:
                 result += block.text
         
         return result.strip() if result else "NO_RESPONSE"
@@ -313,41 +313,50 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
     """
     Format all researched data into HTML.
     Uses fallback URLs when real URLs aren't available.
+    Always returns a valid HTML string, never None.
     """
+    
+    # Ensure all inputs are dicts (not None)
+    price_data = price_data or {}
+    announcements = announcements or {}
+    earnings = earnings or {}
+    industry = industry or {}
+    competitors = competitors or {}
     
     # Price section
     if price_data.get('error'):
-        price_html = f'<span style="color:#e74c3c;">Price data unavailable: {price_data["error"]}</span>'
+        price_html = f'<span style="color:#e74c3c;">Price data unavailable: {price_data.get("error", "Unknown error")}</span>'
     else:
-        change_color = "#27ae60" if price_data['change_percent'] >= 0 else "#e74c3c"
-        change_sign = "+" if price_data['change_percent'] >= 0 else ""
-        price_html = f"""<strong style="color:#2980b9;">YESTERDAY ({price_data['yesterday_date']}):</strong> A${price_data['yesterday_close']:.2f} | 
-<strong style="color:#2980b9;">PREVIOUS ({price_data['previous_date']}):</strong> A${price_data['previous_close']:.2f} | 
-<strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};">{change_sign}{price_data['change_percent']:.2f}%</span>"""
+        change_pct = price_data.get('change_percent', 0) or 0
+        change_color = "#27ae60" if change_pct >= 0 else "#e74c3c"
+        change_sign = "+" if change_pct >= 0 else ""
+        price_html = f"""<strong style="color:#2980b9;">YESTERDAY ({price_data.get('yesterday_date', 'N/A')}):</strong> A${price_data.get('yesterday_close', 0):.2f} | 
+<strong style="color:#2980b9;">PREVIOUS ({price_data.get('previous_date', 'N/A')}):</strong> A${price_data.get('previous_close', 0):.2f} | 
+<strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};">{change_sign}{change_pct:.2f}%</span>"""
     
     # Reason for move
-    news = announcements.get('price_sensitive_news', {})
+    news = announcements.get('price_sensitive_news') or {}
     if news.get('found'):
-        reason_text = news.get('description', 'No specific catalyst identified')
+        reason_text = news.get('description') or 'No specific catalyst identified'
         if news.get('source_url'):
             reason_text += f' <a href="{news["source_url"]}" style="color:#3498db;">[Source]</a>'
     else:
-        reason_text = news.get('description', 'No material announcements in the past 3 days that would explain the price movement.')
+        reason_text = news.get('description') or 'No material announcements in the past 3 days that would explain the price movement.'
     
     # Last announcement
-    ann = announcements.get('last_announcement', {})
-    ann_url = ann.get('source_url') or stock['asx_url']
-    ann_date = ann.get('date', 'Not found')
-    ann_title = ann.get('title', 'Not found')
-    ann_summary = ann.get('summary', 'Unable to retrieve')
+    ann = announcements.get('last_announcement') or {}
+    ann_url = ann.get('source_url') or stock.get('asx_url', '#')
+    ann_date = ann.get('date') or 'Not found'
+    ann_title = ann.get('title') or 'Not found'
+    ann_summary = ann.get('summary') or 'Unable to retrieve'
     
     # Earnings
-    earn = earnings
-    earn_url = earn.get('source_url') or stock['asx_url']
+    earn = earnings or {}
+    earn_url = earn.get('source_url') or stock.get('asx_url', '#')
     
     earnings_parts = []
     if earn.get('report_type') and earn.get('report_type') != 'Not found':
-        earnings_parts.append(f"<strong>Report:</strong> {earn.get('report_type')} ({earn.get('period', 'N/A')})")
+        earnings_parts.append(f"<strong>Report:</strong> {earn.get('report_type')} ({earn.get('period') or 'N/A'})")
     if earn.get('report_date') and earn.get('report_date') != 'Not found':
         earnings_parts.append(f"<strong>Date:</strong> {earn.get('report_date')}")
     if earn.get('revenue') and earn.get('revenue') != 'Not found':
@@ -369,16 +378,20 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
         earnings_html = "<br>".join(earnings_parts)
     
     # Industry dynamics
-    ind_points = industry.get('data_points', [])
+    ind_points = industry.get('data_points') or []
     if ind_points:
         ind_items = []
         for point in ind_points:
-            item = point.get('fact', '')
-            if point.get('source') and point.get('source') != 'N/A':
-                if point.get('source_url'):
-                    item += f' <a href="{point["source_url"]}" style="color:#3498db;">({point["source"]})</a>'
+            if point is None:
+                continue
+            item = point.get('fact') or ''
+            source = point.get('source')
+            if source and source != 'N/A':
+                source_url = point.get('source_url')
+                if source_url:
+                    item += f' <a href="{source_url}" style="color:#3498db;">({source})</a>'
                 else:
-                    item += f' ({point["source"]})'
+                    item += f' ({source})'
             if item:
                 ind_items.append(f'<li>{item}</li>')
         industry_html = "\n".join(ind_items) if ind_items else "<li>No specific industry data found</li>"
@@ -386,19 +399,26 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
         industry_html = "<li>No specific industry data found</li>"
     
     # Competitor dynamics
-    comp_news = competitors.get('competitor_news', [])
+    comp_news = competitors.get('competitor_news') or []
     if comp_news:
         comp_items = []
         for news_item in comp_news:
-            item = f"<strong>{news_item.get('competitor', 'Unknown')}:</strong> {news_item.get('news', '')}"
-            if news_item.get('date'):
-                item += f" ({news_item.get('date')})"
-            if news_item.get('source_url'):
-                item += f' <a href="{news_item["source_url"]}" style="color:#3498db;">[Source]</a>'
-            if news_item.get('implications'):
-                item += f"<br><em>Implications: {news_item.get('implications')}</em>"
+            if news_item is None:
+                continue
+            competitor_name = news_item.get('competitor') or 'Unknown'
+            news_desc = news_item.get('news') or ''
+            item = f"<strong>{competitor_name}:</strong> {news_desc}"
+            news_date = news_item.get('date')
+            if news_date:
+                item += f" ({news_date})"
+            source_url = news_item.get('source_url')
+            if source_url:
+                item += f' <a href="{source_url}" style="color:#3498db;">[Source]</a>'
+            implications = news_item.get('implications')
+            if implications:
+                item += f"<br><em>Implications: {implications}</em>"
             comp_items.append(f'<li>{item}</li>')
-        competitor_html = "\n".join(comp_items)
+        competitor_html = "\n".join(comp_items) if comp_items else "<li>No recent competitor announcements found</li>"
     else:
         competitor_html = "<li>No recent competitor announcements found in the last 2 weeks</li>"
     
@@ -564,8 +584,14 @@ def main():
         
         # Step 6: Format HTML
         print("   📝 Formatting HTML...", end=" ")
-        stock_html = format_stock_html(stock, price, announcements, earnings, industry, competitors, i)
-        print("✅")
+        try:
+            stock_html = format_stock_html(stock, price, announcements, earnings, industry, competitors, i)
+            if stock_html is None:
+                stock_html = f"<h2>{stock['name']} - Error formatting data</h2><hr>"
+            print("✅")
+        except Exception as e:
+            print(f"❌ {e}")
+            stock_html = f"<h2>{stock['name']} - Error: {str(e)}</h2><hr>"
         
         all_html += stock_html
     
