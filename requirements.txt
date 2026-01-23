@@ -1,4 +1,6 @@
-anthropic==0.40.0
-python-dotenv==1.0.0
+anthropic
 yfinance
 requests
+beautifulsoup4
+pdfplumber
+playwright
