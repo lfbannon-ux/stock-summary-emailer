@@ -354,6 +354,112 @@ def call_claude_analyze(client: anthropic.Anthropic, prompt: str) -> str:
 # ASX-BASED RESEARCH FUNCTIONS (replaces web search for announcements/earnings)
 # ============================================================================
 
+def research_new_information(client: anthropic.Anthropic, stock: dict) -> dict:
+    """
+    Research NEW information about the company in the last 7 days.
+    Sources: ASX announcements + reputable news sources via web search.
+    Returns structured data for the "New Information" section.
+    """
+    asx_code = stock['asx_code']
+    today = datetime.now()
+    seven_days_ago = today - timedelta(days=7)
+    
+    result = {
+        "has_new_info": False,
+        "items": [],  # List of new information items
+        "no_news_message": "No new information in the last 7 days."
+    }
+    
+    # Step 1: Check ASX announcements from last 7 days
+    anns = asx_get_announcements(asx_code)
+    recent_anns = []
+    
+    for ann in anns:
+        # Parse date (format: "DD/MM/YYYY" or similar)
+        try:
+            # Try common ASX date formats
+            for fmt in ["%d/%m/%Y", "%d %b %Y", "%Y-%m-%d"]:
+                try:
+                    ann_date = datetime.strptime(ann['date'], fmt)
+                    if ann_date >= seven_days_ago:
+                        recent_anns.append(ann)
+                    break
+                except ValueError:
+                    continue
+        except:
+            # If date parsing fails, include if it looks recent (first few announcements)
+            if len(recent_anns) < 3 and anns.index(ann) < 5:
+                recent_anns.append(ann)
+    
+    # Add ASX announcements to result
+    for ann in recent_anns[:3]:  # Max 3 recent announcements
+        result["items"].append({
+            "type": "ASX Announcement",
+            "title": ann['title'],
+            "date": ann['date'],
+            "summary": None,  # Will be filled if we download PDF
+            "source_url": ann['pdf_url'],
+            "is_new": True
+        })
+        result["has_new_info"] = True
+    
+    # Step 2: Search for recent news from reputable sources
+    news_prompt = f"""Search for news about {stock['name']} (ASX: {stock['asx_code']}) published in the LAST 7 DAYS ONLY.
+
+**ONLY include news from these sources:**
+- Australian Financial Review (AFR)
+- Sydney Morning Herald (SMH)
+- The Australian
+- Bloomberg
+- Reuters
+- Company press releases
+
+**STRICT RULES:**
+- ONLY include articles published within the last 7 days
+- If you cannot verify the publication date is within 7 days, DO NOT include it
+- Focus on material news: earnings updates, contracts, acquisitions, management changes, guidance
+- Ignore opinion pieces, analyst commentary, or general market news
+
+After searching, provide JSON only:
+{{
+    "news_items": [
+        {{
+            "title": "Headline of the article",
+            "source_name": "Publication name",
+            "source_url": "URL or null",
+            "publication_date": "Date (must be within last 7 days)",
+            "summary": "1 sentence summary of what's new"
+        }}
+    ],
+    "no_recent_news": true/false
+}}
+
+If no news from the last 7 days is found, return: {{"news_items": [], "no_recent_news": true}}
+"""
+    
+    search_result = call_claude_with_search(client, news_prompt, max_searches=1)
+    
+    try:
+        json_match = re.search(r'\{[\s\S]*\}', search_result)
+        if json_match:
+            news_data = json.loads(json_match.group())
+            for item in news_data.get('news_items', []):
+                result["items"].append({
+                    "type": "News",
+                    "title": item.get('title'),
+                    "date": item.get('publication_date'),
+                    "summary": item.get('summary'),
+                    "source_name": item.get('source_name'),
+                    "source_url": item.get('source_url'),
+                    "is_new": True
+                })
+                result["has_new_info"] = True
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    
+    return result
+
+
 def research_announcements_asx(client: anthropic.Anthropic, stock: dict) -> dict:
     """
     Research announcements using ASX scraper.
@@ -511,7 +617,7 @@ def research_earnings_asx(client: anthropic.Anthropic, stock: dict) -> dict:
         }
     
     # Use Claude to extract financial metrics
-    prompt = f"""Analyze this ASX earnings report and extract key financial metrics.
+    prompt = f"""Analyze this ASX HISTORICAL earnings report and extract ACTUAL reported financial metrics.
 
 Title: {latest['title']}
 Date: {latest['date']}
@@ -519,20 +625,29 @@ Date: {latest['date']}
 Content:
 {text[:10000]}
 
+**CRITICAL REQUIREMENTS:**
+- This must be a HISTORICAL financial report with ACTUAL numbers (not projections or forecasts)
+- You must find REAL revenue and/or operating income figures that were actually reported
+- If this is NOT a proper earnings report with real financial numbers, return "Not found" for all fields
+
 Provide your response in EXACTLY this JSON format (no other text):
 {{
-    "report_type": "Annual/Half-Year/Quarterly",
+    "report_type": "Annual/Half-Year/Quarterly or 'Not found' if not a real earnings report",
     "report_date": "{latest['date']}",
     "period": "e.g. FY25 or H1 FY26",
-    "revenue": "revenue figure with currency e.g. $1.2B or 'Not found'",
-    "npat": "net profit after tax e.g. $150M or 'Not found'",
-    "ebitda": "EBITDA figure or 'Not found'",
-    "eps": "earnings per share e.g. 45.2c or 'Not found'",
+    "revenue": "ACTUAL reported revenue with currency e.g. '$1.2B' or 'Not found'",
+    "operating_income": "ACTUAL operating income/EBIT e.g. '$200M' or 'Not found'",
+    "npat": "ACTUAL net profit after tax e.g. '$150M' or 'Not found'",
+    "ebitda": "ACTUAL EBITDA figure or 'Not found'",
+    "eps": "ACTUAL earnings per share e.g. '45.2c' or 'Not found'",
     "dividend": "dividend info e.g. '25c fully franked' or 'Not found'",
     "guidance": "forward guidance summary or 'None mentioned'"
 }}
 
-Only report numbers you actually found. Do NOT make up financial figures."""
+**RULES:**
+- Only report ACTUAL numbers from the document - do NOT estimate or calculate
+- Revenue OR Operating Income must be found for this to be a valid earnings report
+- If you cannot find actual historical financial metrics, this is not a proper earnings report"""
 
     response = call_claude_analyze(client, prompt)
     
@@ -569,13 +684,19 @@ Only report numbers you actually found. Do NOT make up financial figures."""
 # ============================================================================
 
 def research_industry(client: anthropic.Anthropic, stock: dict) -> dict:
-    """Research industry dynamics with authoritative sources."""
+    """Research industry dynamics with authoritative sources. Max 2 months old, flag items from last 7 days as NEW."""
     industry_pubs = ", ".join(stock.get('industry_publications', []))
     supply_chain = stock.get('supply_chain', {})
     customers = supply_chain.get('customers', 'N/A')
     suppliers = supply_chain.get('suppliers', 'N/A')
     
     prompt = f"""You are conducting industry research for {stock['name']} (ASX: {stock['asx_code']}) in the {stock['industry']} sector.
+
+**STRICT DATE REQUIREMENTS:**
+- ONLY include information published within the LAST 2 MONTHS (60 days)
+- For each item, you MUST verify and include the publication date
+- If you cannot verify the date is within 2 months, DO NOT include it
+- Mark items published in the LAST 7 DAYS with "is_new": true
 
 **SOURCE HIERARCHY (prioritize in this order):**
 1. Industry-specific trade publications: {industry_pubs}
@@ -585,6 +706,7 @@ def research_industry(client: anthropic.Anthropic, stock: dict) -> dict:
 
 **EXCLUDED SOURCES - DO NOT CITE:**
 - IBISWorld, Mordor Intelligence, or similar market research aggregators
+- Any article older than 2 months
 - If you cannot verify whether a source is an aggregator, exclude it
 
 **SUPPLY CHAIN CONTEXT:**
@@ -593,16 +715,16 @@ def research_industry(client: anthropic.Anthropic, stock: dict) -> dict:
 - Include relevant supply chain developments if material to {stock['name']}
 
 Search for: "{stock['industry']} Australia 2025 2026"
-Also search: "{stock['name']} industry outlook" or relevant supply chain news
 
 After searching, provide the following in JSON format only (no other text):
 {{
     "data_points": [
         {{
             "fact": "A specific statistic, trend, or development with numbers/percentages where available",
-            "source_name": "Name of the publication (e.g., 'Australian Financial Review', 'Mining.com')",
+            "source_name": "Name of the publication (e.g., 'Australian Financial Review')",
             "source_url": "Actual URL from search results, or null if not available",
-            "publication_date": "Date if visible in search results, or 'Date not verified'",
+            "publication_date": "REQUIRED - exact date from the article (e.g., 'January 15, 2026')",
+            "is_new": true/false,
             "relevance": "How this specifically relates to {stock['name']} or its supply chain"
         }}
     ]
@@ -610,11 +732,10 @@ After searching, provide the following in JSON format only (no other text):
 
 **CRITICAL RULES:**
 - Provide 2-4 specific data points with actual numbers/percentages where possible
+- EVERY item must have a verified publication_date within the last 2 months
+- Set "is_new": true if published within the last 7 days, otherwise false
 - Only include facts you actually found in search results - do NOT fabricate statistics
-- Verify each source meets reputability standards before including
-- If IBISWorld or Mordor Intelligence appears in results, explicitly skip it
-- Include supply chain news only when it materially impacts {stock['name']}
-- If publication date cannot be verified from search results, state "Date not verified"
+- If no recent industry news exists within 2 months, return empty data_points array
 """
     
     result = call_claude_with_search(client, prompt, max_searches=2)
@@ -628,21 +749,14 @@ After searching, provide the following in JSON format only (no other text):
         pass
     
     return {
-        "data_points": [
-            {
-                "fact": "No specific industry data found from authoritative sources",
-                "source_name": "N/A",
-                "source_url": None,
-                "publication_date": "N/A",
-                "relevance": "N/A"
-            }
-        ]
+        "data_points": []
     }
 
 
 def research_competitors(client: anthropic.Anthropic, stock: dict) -> dict:
     """
     Research competitor news using Claude web search.
+    Max 2 months old, flag items from last 7 days as NEW.
     Option C: Web search as primary, ASX scraper supplement for listed competitors.
     """
     competitors_str = ", ".join(stock['competitors'])
@@ -655,10 +769,11 @@ def research_competitors(client: anthropic.Anthropic, stock: dict) -> dict:
 Listed: {', '.join(listed_comps) if listed_comps else 'None specified'}
 Unlisted: {', '.join(unlisted_comps) if unlisted_comps else 'None specified'}
 
-**STRICT TIMEFRAME: Last 14 days only (from today's date)**
-- Only include news published within the last 2 weeks
-- Verify publication dates from search results where possible
-- If no recent competitive updates exist within this window, explicitly state this - do NOT broaden the timeframe
+**STRICT DATE REQUIREMENTS:**
+- ONLY include news published within the LAST 2 MONTHS (60 days)
+- For each item, you MUST verify and include the publication date
+- If you cannot verify the date is within 2 months, DO NOT include it
+- Mark items published in the LAST 7 DAYS with "is_new": true
 
 **SOURCE HIERARCHY (prioritize in this order):**
 1. Company press releases and ASX announcements
@@ -668,6 +783,7 @@ Unlisted: {', '.join(unlisted_comps) if unlisted_comps else 'None specified'}
 **EXCLUDED SOURCES - DO NOT CITE:**
 - IBISWorld, Mordor Intelligence, or similar market research aggregators
 - Opinion pieces or general industry commentary (focus on competitor ACTIONS)
+- Any article older than 2 months
 
 **WHAT COUNTS AS COMPETITIVE NEWS:**
 - Product launches or service changes
@@ -685,7 +801,8 @@ After searching, provide the following in JSON format only (no other text):
         {{
             "competitor": "Company name",
             "news": "Specific action, announcement, or development (not opinion/commentary)",
-            "publication_date": "Date from search results, or 'Date not verified'",
+            "publication_date": "REQUIRED - exact date from the article (e.g., 'January 15, 2026')",
+            "is_new": true/false,
             "source_name": "Publication name",
             "source_url": "Actual URL from search results, or null",
             "implications": "What this might mean for {stock['name']}'s competitive position"
@@ -695,19 +812,20 @@ After searching, provide the following in JSON format only (no other text):
     "no_recent_news_note": null
 }}
 
-If NO competitive news was found within the 2-week window, return:
+If NO competitive news was found within the 2-month window, return:
 {{
     "competitor_news": [],
     "no_recent_news": true,
-    "no_recent_news_note": "No material competitive announcements found within the last 14 days for monitored competitors."
+    "no_recent_news_note": "No material competitive announcements found within the last 2 months for monitored competitors."
 }}
 
 **CRITICAL RULES:**
+- EVERY item must have a verified publication_date within the last 2 months
+- Set "is_new": true if published within the last 7 days, otherwise false
 - Only include news you actually found with verifiable competitor ACTIONS
 - Do NOT include general market commentary or analyst opinions
-- If publication date cannot be verified, note "Date not verified" but still include if the content appears recent
 - Be specific about what competitors announced or did
-- If no recent news exists, say so clearly - do NOT invent or stretch timeframes
+- If no recent news exists within 2 months, return empty competitor_news array
 """
     
     result = call_claude_with_search(client, prompt, max_searches=2)
@@ -839,12 +957,12 @@ def save_to_cache(asx_code: str, cache_type: str, data: dict):
 # HTML FORMATTING
 # ============================================================================
 
-def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnings: dict, 
+def format_stock_html(stock: dict, price_data: dict, new_info: dict, earnings: dict, 
                       industry: dict, competitors: dict, stock_num: int) -> str:
     """Format all researched data into HTML."""
     
     price_data = price_data or {}
-    announcements = announcements or {}
+    new_info = new_info or {}
     earnings = earnings or {}
     industry = industry or {}
     competitors = competitors or {}
@@ -860,21 +978,21 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
 <strong style="color:#2980b9;">PREVIOUS ({price_data.get('previous_date', 'N/A')}):</strong> A${price_data.get('previous_close', 0):.2f} | 
 <strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};">{change_sign}{change_pct:.2f}%</span>"""
     
-    # Reason for move
-    news = announcements.get('price_sensitive_news') or {}
-    if news.get('found'):
-        reason_text = news.get('description') or 'No specific catalyst identified'
-        if news.get('source_url'):
-            reason_text += f' <a href="{news["source_url"]}" style="color:#3498db;">[Source]</a>'
+    # NEW INFORMATION section (replaces "Reason for Move")
+    if new_info.get('has_new_info') and new_info.get('items'):
+        new_info_items = []
+        for item in new_info['items']:
+            item_html = f"<strong>{item.get('type', 'News')}:</strong> {item.get('title', 'Untitled')}"
+            if item.get('date'):
+                item_html += f" ({item['date']})"
+            if item.get('source_url'):
+                item_html += f' <a href="{item["source_url"]}" style="color:#3498db;">[Source]</a>'
+            if item.get('summary'):
+                item_html += f"<br><em style=\"color:#7f8c8d;font-size:0.9em;\">{item['summary']}</em>"
+            new_info_items.append(f"<li>{item_html}</li>")
+        new_info_html = "\n".join(new_info_items)
     else:
-        reason_text = news.get('description') or 'No material announcements in the past 3 days that would explain the price movement.'
-    
-    # Last announcement
-    ann = announcements.get('last_announcement') or {}
-    ann_url = ann.get('source_url') or stock.get('asx_url', '#')
-    ann_date = ann.get('date') or 'Not found'
-    ann_title = ann.get('title') or 'Not found'
-    ann_summary = ann.get('summary') or 'Unable to retrieve'
+        new_info_html = "<li><em>No new information in the last 7 days.</em></li>"
     
     # Earnings
     earn = earnings or {}
@@ -891,6 +1009,8 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
         earnings_parts.append(f"<strong>NPAT:</strong> {earn.get('npat')}")
     if earn.get('ebitda') and earn.get('ebitda') != 'Not found':
         earnings_parts.append(f"<strong>EBITDA:</strong> {earn.get('ebitda')}")
+    if earn.get('operating_income') and earn.get('operating_income') != 'Not found':
+        earnings_parts.append(f"<strong>Operating Income:</strong> {earn.get('operating_income')}")
     if earn.get('eps') and earn.get('eps') != 'Not found':
         earnings_parts.append(f"<strong>EPS:</strong> {earn.get('eps')}")
     if earn.get('dividend') and earn.get('dividend') != 'Not found':
@@ -899,11 +1019,11 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
         earnings_parts.append(f"<strong>Guidance:</strong> {earn.get('guidance')}")
     
     if not earnings_parts:
-        earnings_html = "Earnings data not found in recent announcements"
+        earnings_html = "No historical earnings report with financial metrics found."
     else:
         earnings_html = "<br>".join(earnings_parts)
     
-    # Industry dynamics
+    # Industry dynamics - with [NEW] tag for items from last 7 days
     ind_points = industry.get('data_points') or []
     if ind_points:
         ind_items = []
@@ -914,11 +1034,15 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
             if not fact or fact == 'N/A':
                 continue
             
+            # Add [NEW] tag if published in last 7 days
+            is_new = point.get('is_new', False)
+            new_tag = '<span style="color:#e74c3c;font-weight:bold;">[NEW]</span> ' if is_new else ''
+            
             source_name = point.get('source_name') or point.get('source')
             source_url = point.get('source_url')
             pub_date = point.get('publication_date', '')
             
-            item = fact
+            item = f"{new_tag}{fact}"
             if source_name and source_name != 'N/A':
                 if source_url:
                     item += f' <a href="{source_url}" style="color:#3498db;">({source_name}'
@@ -936,16 +1060,16 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
                 item += f'<br><em style="color:#7f8c8d;font-size:0.9em;">→ {relevance}</em>'
             
             ind_items.append(f'<li>{item}</li>')
-        industry_html = "\n".join(ind_items) if ind_items else "<li>No specific industry data found from authoritative sources</li>"
+        industry_html = "\n".join(ind_items) if ind_items else "<li>No industry news from the last 2 months.</li>"
     else:
-        industry_html = "<li>No specific industry data found from authoritative sources</li>"
+        industry_html = "<li>No industry news from the last 2 months.</li>"
     
-    # Competitor dynamics
+    # Competitor dynamics - with [NEW] tag for items from last 7 days
     comp_news = competitors.get('competitor_news') or []
     no_recent = competitors.get('no_recent_news', False)
     
     if no_recent or not comp_news:
-        note = competitors.get('no_recent_news_note') or 'No material competitive announcements found within the last 14 days.'
+        note = competitors.get('no_recent_news_note') or 'No material competitive announcements found within the last 2 months.'
         competitor_html = f"<li><em>{note}</em></li>"
     else:
         comp_items = []
@@ -957,7 +1081,11 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
             if not news_desc:
                 continue
             
-            item = f"<strong>{competitor_name}:</strong> {news_desc}"
+            # Add [NEW] tag if published in last 7 days
+            is_new = news_item.get('is_new', False)
+            new_tag = '<span style="color:#e74c3c;font-weight:bold;">[NEW]</span> ' if is_new else ''
+            
+            item = f"{new_tag}<strong>{competitor_name}:</strong> {news_desc}"
             
             source_name = news_item.get('source_name')
             pub_date = news_item.get('publication_date') or news_item.get('date')
@@ -982,7 +1110,7 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
             
             comp_items.append(f'<li>{item}</li>')
         
-        competitor_html = "\n".join(comp_items) if comp_items else "<li>No recent competitor announcements found in the last 2 weeks</li>"
+        competitor_html = "\n".join(comp_items) if comp_items else "<li>No competitor news from the last 2 months.</li>"
     
     # Assemble HTML
     html = f"""
@@ -995,17 +1123,11 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">REASON FOR MOVE:</strong><br>
-{reason_text}
+<strong style="color:#2980b9;">NEW INFORMATION (Last 7 Days):</strong>
 </p>
-
-<p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">LAST PRICE-SENSITIVE ANNOUNCEMENT:</strong><br>
-<strong>Date:</strong> {ann_date}<br>
-<strong>Title:</strong> {ann_title}<br>
-<strong>Summary:</strong> {ann_summary}<br>
-<strong>Source:</strong> <a href="{ann_url}" style="color:#3498db;">View Announcement</a>
-</p>
+<ul style="margin:5px 0 15px 20px;line-height:1.8;">
+{new_info_html}
+</ul>
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong><br>
@@ -1014,14 +1136,14 @@ def format_stock_html(stock: dict, price_data: dict, announcements: dict, earnin
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">INDUSTRY DYNAMICS:</strong>
+<strong style="color:#2980b9;">INDUSTRY DYNAMICS (Last 2 Months):</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
 {industry_html}
 </ul>
 
 <p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">COMPETITIVE DYNAMICS:</strong>
+<strong style="color:#2980b9;">COMPETITIVE DYNAMICS (Last 2 Months):</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
 {competitor_html}
@@ -1163,11 +1285,11 @@ def main():
         else:
             print(f"✅ A${price['yesterday_close']:.2f} ({price['change_percent']:+.2f}%)")
         
-        # Step 2: Research announcements (ASX Scraper)
-        print("   📢 Researching announcements (ASX)...", end=" ")
-        announcements = research_announcements_asx(client, stock)
-        ann_status = "✅" if announcements.get('last_announcement', {}).get('date') != 'Not found' else "⚠️"
-        print(ann_status)
+        # Step 2: Research NEW INFORMATION (last 7 days - ASX + news search)
+        print("   📰 Researching new information (last 7 days)...", end=" ")
+        new_info = research_new_information(client, stock)
+        new_info_status = "✅" if new_info.get('has_new_info') else "⚠️ (none)"
+        print(new_info_status)
         
         # Step 3: Research earnings (ASX Scraper with caching)
         print("   💹 Researching earnings (ASX)...", end=" ")
@@ -1175,15 +1297,15 @@ def main():
         earn_status = "✅" if earnings.get('report_type') != 'Not found' else "⚠️"
         print(earn_status)
         
-        # Step 4: Research industry (Claude web search)
-        print("   🏭 Researching industry (Claude)...", end=" ")
+        # Step 4: Research industry (Claude web search - last 2 months)
+        print("   🏭 Researching industry (last 2 months)...", end=" ")
         industry = research_industry(client, stock)
         ind_status = "✅" if len(industry.get('data_points', [])) > 0 else "⚠️"
         print(ind_status)
         
-        # Step 5: Research competitors (Claude + ASX supplement)
+        # Step 5: Research competitors (Claude + ASX supplement - last 2 months)
         listed_comp_count = len(stock.get('listed_competitors', []))
-        print(f"   🏁 Researching competitors (Claude + {listed_comp_count} ASX)...", end=" ")
+        print(f"   🏁 Researching competitors (last 2 months, +{listed_comp_count} ASX)...", end=" ")
         competitors = research_competitors(client, stock)
         comp_status = "✅" if len(competitors.get('competitor_news', [])) > 0 or competitors.get('no_recent_news') else "⚠️"
         print(comp_status)
@@ -1191,7 +1313,7 @@ def main():
         # Step 6: Format HTML
         print("   📝 Formatting HTML...", end=" ")
         try:
-            stock_html = format_stock_html(stock, price, announcements, earnings, industry, competitors, i)
+            stock_html = format_stock_html(stock, price, new_info, earnings, industry, competitors, i)
             if stock_html is None:
                 stock_html = f"<h2>{stock['name']} - Error formatting data</h2><hr>"
             print("✅")
