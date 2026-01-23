@@ -47,6 +47,76 @@ ASX_HEADERS = {
 
 STOCKS = [
     {
+        "name": "AUB Group Limited",
+        "ticker": "AUB.AX",
+        "asx_code": "AUB",
+        "industry": "insurance broking",
+        "industry_publications": ["Insurance News Australia", "Insurance Business Australia", "Australasian Underwriting"],
+        "supply_chain": {
+            "customers": "SME businesses, corporate clients requiring insurance placement",
+            "suppliers": "underwriters including Lloyd's syndicates, QBE, Allianz"
+        },
+        "competitors": ["Steadfast Group (ASX:SDF)", "PSC Insurance (ASX:PSI)", "Gallagher Australia (unlisted)", "Marsh McLennan (unlisted)"],
+        "listed_competitors": ["SDF", "PSI"],
+        "asx_url": "https://www.asx.com.au/markets/company/AUB"
+    },
+    {
+        "name": "Mineral Resources Limited",
+        "ticker": "MIN.AX",
+        "asx_code": "MIN",
+        "industry": "mining services and lithium production",
+        "industry_publications": ["Mining.com", "Australian Mining", "Mining Weekly", "Fastmarkets"],
+        "supply_chain": {
+            "customers": "lithium buyers including battery manufacturers, iron ore offtakers",
+            "suppliers": "mining equipment providers, crushing/processing contractors"
+        },
+        "competitors": ["Pilbara Minerals (ASX:PLS)", "Fortescue Metals (ASX:FMG)", "IGO Limited (ASX:IGO)", "Liontown Resources (ASX:LTR)"],
+        "listed_competitors": ["PLS", "FMG", "IGO"],
+        "asx_url": "https://www.asx.com.au/markets/company/MIN"
+    },
+    {
+        "name": "HUB24 Limited",
+        "ticker": "HUB.AX",
+        "asx_code": "HUB",
+        "industry": "wealth management platforms",
+        "industry_publications": ["Financial Standard", "Professional Planner", "Money Management", "Morningstar Australia"],
+        "supply_chain": {
+            "customers": "financial advisers, stockbrokers, accountants, self-directed investors",
+            "suppliers": "custody providers, fund managers, technology vendors"
+        },
+        "competitors": ["Netwealth Group (ASX:NWL)", "Praemium Limited (ASX:PPS)", "Mason Stevens (unlisted)", "AMP Platforms (ASX:AMP)"],
+        "listed_competitors": ["NWL", "PPS"],
+        "asx_url": "https://www.asx.com.au/markets/company/HUB"
+    },
+    {
+        "name": "Macquarie Group Limited",
+        "ticker": "MQG.AX",
+        "asx_code": "MQG",
+        "industry": "investment banking and asset management",
+        "industry_publications": ["Infrastructure Investor", "Private Equity International", "Bloomberg Markets", "Reuters Finance"],
+        "supply_chain": {
+            "customers": "institutional investors, infrastructure funds, corporate clients, retail banking customers",
+            "suppliers": "global capital markets, institutional co-investors"
+        },
+        "competitors": ["ANZ Group (ASX:ANZ)", "Commonwealth Bank (ASX:CBA)", "Morgan Stanley (global)", "Goldman Sachs (global)"],
+        "listed_competitors": ["ANZ", "CBA"],
+        "asx_url": "https://www.asx.com.au/markets/company/MQG"
+    },
+    {
+        "name": "Charter Hall Group",
+        "ticker": "CHC.AX",
+        "asx_code": "CHC",
+        "industry": "real estate investment and funds management",
+        "industry_publications": ["The Property Council", "Commercial Real Estate", "Australian Property Journal", "PERE News"],
+        "supply_chain": {
+            "customers": "institutional investors, superannuation funds, wholesale investors, tenants",
+            "suppliers": "property developers, construction firms, property managers"
+        },
+        "competitors": ["Goodman Group (ASX:GMG)", "Dexus (ASX:DXS)", "GPT Group (ASX:GPT)", "Centuria Capital (ASX:CNI)"],
+        "listed_competitors": ["GMG", "DXS", "GPT"],
+        "asx_url": "https://www.asx.com.au/markets/company/CHC"
+    },
+    {
         "name": "CSL Limited",
         "ticker": "CSL.AX",
         "asx_code": "CSL",
@@ -57,7 +127,7 @@ STOCKS = [
             "suppliers": "plasma collection centres (CSL Plasma), pharmaceutical manufacturing equipment providers"
         },
         "competitors": ["Takeda Pharmaceutical (global)", "Grifols (global)", "BioMarin (global)", "Sanofi (vaccines)"],
-        "listed_competitors": [],  # No ASX-listed competitors
+        "listed_competitors": [],
         "asx_url": "https://www.asx.com.au/markets/company/CSL"
     },
     {
@@ -71,7 +141,7 @@ STOCKS = [
             "suppliers": "Cisco, Dell Technologies, HP, Lenovo, Microsoft, VMware, Hewlett Packard Enterprise"
         },
         "competitors": ["Ingram Micro Australia (unlisted)", "Synnex Australia (unlisted)", "Westcon-Comstor (unlisted)", "Sektor (unlisted)"],
-        "listed_competitors": [],  # No ASX-listed competitors
+        "listed_competitors": [],
         "asx_url": "https://www.asx.com.au/markets/company/DDR"
     },
     {
@@ -85,7 +155,7 @@ STOCKS = [
             "suppliers": "cloud infrastructure providers (AWS, Azure), technology partners"
         },
         "competitors": ["Oracle Utilities (global)", "SAP (global)", "Gentrack Group (NZX:GTK)", "TechnologyOne (ASX:TNE)"],
-        "listed_competitors": ["TNE"],  # TechnologyOne is ASX-listed
+        "listed_competitors": ["TNE"],
         "asx_url": "https://www.asx.com.au/markets/company/HSN"
     },
     {
@@ -99,7 +169,7 @@ STOCKS = [
             "suppliers": "property developers, construction firms, property managers, facilities management providers"
         },
         "competitors": ["Dexus (ASX:DXS)", "GPT Group (ASX:GPT)", "Centuria Office REIT (ASX:COF)", "Charter Hall (ASX:CHC)"],
-        "listed_competitors": ["DXS", "GPT", "COF", "CHC"],  # All are ASX-listed
+        "listed_competitors": ["DXS", "GPT", "COF", "CHC"],
         "asx_url": "https://www.asx.com.au/markets/company/GOZ"
     },
     {
@@ -107,13 +177,13 @@ STOCKS = [
         "ticker": "PFP.AX",
         "asx_code": "PFP",
         "industry": "death care services (funeral homes, cemeteries, crematoria)",
-        "industry_publications": ["Australian Funeral Directors Association", "Australasian Cemeteries & Crematoria Association", "InvoCare industry reports"],
+        "industry_publications": ["Australian Funeral Directors Association", "Australasian Cemeteries & Crematoria Association"],
         "supply_chain": {
             "customers": "families and individuals requiring funeral services across Australia and New Zealand",
             "suppliers": "casket and coffin manufacturers, memorial and headstone suppliers (Decra), floral providers, vehicle fleet suppliers"
         },
         "competitors": ["InvoCare (acquired by TPG Capital, unlisted)", "Independent family-owned funeral homes", "Southern Metropolitan Cemeteries Trust (unlisted)"],
-        "listed_competitors": [],  # No ASX-listed competitors (InvoCare was delisted)
+        "listed_competitors": [],
         "asx_url": "https://www.asx.com.au/markets/company/PFP"
     },
 ]
