@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-Berkholts Daily Stock Summary Emailer - V6
+Berkholts Daily Stock Summary Emailer - V7
 ===========================================
-Key changes from V5:
-1. ASX Scraper integration for announcements (replaces Claude web search)
-2. ASX Scraper integration for earnings (replaces Claude web search)
-3. Option C for competitors: Claude web search + ASX scraper supplement for listed competitors
-4. Significant cost reduction (fewer API calls)
+Key changes from V6:
+1. Earnings section reformatted to bullet points
+2. Financial metrics now include growth rates vs prior comparable period
 
 Dependencies (add to requirements.txt):
 - playwright
@@ -686,7 +684,7 @@ def research_earnings_asx(client: anthropic.Anthropic, stock: dict) -> dict:
             "source_url": latest['pdf_url']
         }
     
-    # Use Claude to extract financial metrics
+    # Use Claude to extract financial metrics (V7: now includes growth rates)
     prompt = f"""Analyze this ASX HISTORICAL earnings report and extract ACTUAL reported financial metrics.
 
 Title: {latest['title']}
@@ -699,17 +697,18 @@ Content:
 - This must be a HISTORICAL financial report with ACTUAL numbers (not projections or forecasts)
 - You must find REAL revenue and/or operating income figures that were actually reported
 - If this is NOT a proper earnings report with real financial numbers, return "Not found" for all fields
+- For each metric, include the GROWTH RATE vs prior comparable period (pcp) if mentioned (e.g. "+12% pcp" or "-5% YoY")
 
 Provide your response in EXACTLY this JSON format (no other text):
 {{
     "report_type": "Annual/Half-Year/Quarterly or 'Not found' if not a real earnings report",
     "report_date": "{latest['date']}",
     "period": "e.g. FY25 or H1 FY26",
-    "revenue": "ACTUAL reported revenue with currency e.g. '$1.2B' or 'Not found'",
-    "operating_income": "ACTUAL operating income/EBIT e.g. '$200M' or 'Not found'",
-    "npat": "ACTUAL net profit after tax e.g. '$150M' or 'Not found'",
-    "ebitda": "ACTUAL EBITDA figure or 'Not found'",
-    "eps": "ACTUAL earnings per share e.g. '45.2c' or 'Not found'",
+    "revenue": "ACTUAL reported revenue with currency AND growth rate e.g. '$1.2B (+12% pcp)' or 'Not found'",
+    "operating_income": "ACTUAL operating income/EBIT with growth rate e.g. '$200M (+8% pcp)' or 'Not found'",
+    "npat": "ACTUAL net profit after tax with growth rate e.g. '$150M (-3% pcp)' or 'Not found'",
+    "ebitda": "ACTUAL EBITDA figure with growth rate or 'Not found'",
+    "eps": "ACTUAL earnings per share with growth rate e.g. '45.2c (+5% pcp)' or 'Not found'",
     "dividend": "dividend info e.g. '25c fully franked' or 'Not found'",
     "guidance": "forward guidance summary or 'None mentioned'"
 }}
@@ -717,7 +716,8 @@ Provide your response in EXACTLY this JSON format (no other text):
 **RULES:**
 - Only report ACTUAL numbers from the document - do NOT estimate or calculate
 - Revenue OR Operating Income must be found for this to be a valid earnings report
-- If you cannot find actual historical financial metrics, this is not a proper earnings report"""
+- If you cannot find actual historical financial metrics, this is not a proper earnings report
+- Always include growth rate/change vs prior period if mentioned in the document (pcp, YoY, etc.)"""
 
     response = call_claude_analyze(client, prompt)
     
@@ -1064,34 +1064,55 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, earnings: d
     else:
         new_info_html = "<li><em>No new information in the last 7 days.</em></li>"
     
-    # Earnings
+    # V7: Earnings section - reformatted to bullet points
     earn = earnings or {}
     earn_url = earn.get('source_url') or stock.get('asx_url', '#')
     
-    earnings_parts = []
-    if earn.get('report_type') and earn.get('report_type') != 'Not found':
-        earnings_parts.append(f"<strong>Report:</strong> {earn.get('report_type')} ({earn.get('period') or 'N/A'})")
-    if earn.get('report_date') and earn.get('report_date') != 'Not found':
-        earnings_parts.append(f"<strong>Date:</strong> {earn.get('report_date')}")
-    if earn.get('revenue') and earn.get('revenue') != 'Not found':
-        earnings_parts.append(f"<strong>Revenue:</strong> {earn.get('revenue')}")
-    if earn.get('npat') and earn.get('npat') != 'Not found':
-        earnings_parts.append(f"<strong>NPAT:</strong> {earn.get('npat')}")
-    if earn.get('ebitda') and earn.get('ebitda') != 'Not found':
-        earnings_parts.append(f"<strong>EBITDA:</strong> {earn.get('ebitda')}")
-    if earn.get('operating_income') and earn.get('operating_income') != 'Not found':
-        earnings_parts.append(f"<strong>Operating Income:</strong> {earn.get('operating_income')}")
-    if earn.get('eps') and earn.get('eps') != 'Not found':
-        earnings_parts.append(f"<strong>EPS:</strong> {earn.get('eps')}")
-    if earn.get('dividend') and earn.get('dividend') != 'Not found':
-        earnings_parts.append(f"<strong>Dividend:</strong> {earn.get('dividend')}")
-    if earn.get('guidance') and earn.get('guidance') != 'None mentioned':
-        earnings_parts.append(f"<strong>Guidance:</strong> {earn.get('guidance')}")
-    
-    if not earnings_parts:
-        earnings_html = "No historical earnings report with financial metrics found."
+    # Build report line
+    report_type = earn.get('report_type', 'Not found')
+    period = earn.get('period', 'Not found')
+    if report_type != 'Not found' and period != 'Not found':
+        report_line = f"{report_type} ({period})"
+    elif report_type != 'Not found':
+        report_line = report_type
     else:
-        earnings_html = "<br>".join(earnings_parts)
+        report_line = "Not found"
+    
+    # Build date line
+    report_date = earn.get('report_date', 'Not found')
+    
+    # Build key financial metrics line (combine all metrics in one line)
+    metrics = []
+    if earn.get('revenue') and earn.get('revenue') != 'Not found':
+        metrics.append(f"Revenue: {earn['revenue']}")
+    if earn.get('operating_income') and earn.get('operating_income') != 'Not found':
+        metrics.append(f"Operating Income: {earn['operating_income']}")
+    if earn.get('npat') and earn.get('npat') != 'Not found':
+        metrics.append(f"NPAT: {earn['npat']}")
+    if earn.get('ebitda') and earn.get('ebitda') != 'Not found':
+        metrics.append(f"EBITDA: {earn['ebitda']}")
+    if earn.get('eps') and earn.get('eps') != 'Not found':
+        metrics.append(f"EPS: {earn['eps']}")
+    if earn.get('dividend') and earn.get('dividend') != 'Not found':
+        metrics.append(f"Dividend: {earn['dividend']}")
+    
+    metrics_line = " | ".join(metrics) if metrics else "Not found"
+    
+    # Build guidance line
+    guidance = earn.get('guidance', 'None mentioned')
+    if guidance == 'None mentioned' or not guidance:
+        guidance_line = "None mentioned"
+    else:
+        guidance_line = guidance
+    
+    # Assemble earnings HTML as bullet points
+    earnings_html = f"""<ul style="margin:5px 0 15px 20px;line-height:1.8;">
+<li><strong>Report:</strong> {report_line}</li>
+<li><strong>Date:</strong> {report_date}</li>
+<li><strong>Key Financials:</strong> {metrics_line}</li>
+<li><strong>Guidance:</strong> {guidance_line}</li>
+<li><strong>Source:</strong> <a href="{earn_url}" style="color:#3498db;">View Report</a></li>
+</ul>"""
     
     # Industry dynamics - with [NEW] tag for items from last 7 days
     ind_points = industry.get('data_points') or []
@@ -1182,7 +1203,7 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, earnings: d
         
         competitor_html = "\n".join(comp_items) if comp_items else "<li>No competitor news from the last 2 months.</li>"
     
-    # Assemble HTML
+    # Assemble HTML (V7: earnings section now uses bullet points)
     html = f"""
 <h2 style="color:#34495e;margin-top:30px;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
 {stock_num}. {stock['name']} ({stock['ticker']})
@@ -1200,10 +1221,9 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, earnings: d
 </ul>
 
 <p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong><br>
-{earnings_html}<br>
-<strong>Source:</strong> <a href="{earn_url}" style="color:#3498db;">View Report</a>
+<strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong>
 </p>
+{earnings_html}
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">INDUSTRY DYNAMICS (Last 2 Months):</strong>
@@ -1244,7 +1264,7 @@ Berkholts Stock Summaries - {today}
 {content}
 
 <p style="color:#7f8c8d;font-size:12px;margin-top:30px;text-align:center;">
-Generated by Berkholts Stock Summary System V6<br>
+Generated by Berkholts Stock Summary System V7<br>
 Prices: Yahoo Finance | Announcements & Earnings: ASX Direct | Industry & Competitors: Claude AI<br>
 Sources: ASX announcements, trade publications, AFR, WSJ, SMH, The Australian<br>
 </p>
@@ -1302,7 +1322,7 @@ def send_email(html: str, recipient: str, smtp_email: str, smtp_password: str, s
 
 def main():
     print("=" * 70)
-    print("🚀 Berkholts Stock Emailer - V6 (ASX Scraper Integration)")
+    print("🚀 Berkholts Stock Emailer - V7 (Bullet Point Earnings)")
     print(f"⏰ Started: {datetime.now()}")
     print("=" * 70)
     
