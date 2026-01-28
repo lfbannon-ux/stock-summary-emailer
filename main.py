@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Berkholts Daily Stock Summary Emailer - V7
+Berkholts Daily Stock Summary Emailer - V6
 ===========================================
-Key changes from V6:
-1. Earnings section reformatted to bullet points
-2. Financial metrics now include growth rates vs prior comparable period
+Key changes from V5:
+1. ASX Scraper integration for announcements (replaces Claude web search)
+2. ASX Scraper integration for earnings (replaces Claude web search)
+3. Option C for competitors: Claude web search + ASX scraper supplement for listed competitors
+4. Significant cost reduction (fewer API calls)
 
 Dependencies (add to requirements.txt):
 - playwright
@@ -422,10 +424,46 @@ def call_claude_analyze(client: anthropic.Anthropic, prompt: str) -> str:
 # ASX-BASED RESEARCH FUNCTIONS (replaces web search for announcements/earnings)
 # ============================================================================
 
+def parse_asx_date(date_str: str) -> datetime:
+    """Parse ASX date string which may include time. Returns datetime or None."""
+    if not date_str:
+        return None
+    
+    # Clean up the date string - remove time portion if present
+    # ASX dates can be "26/08/2025" or "26/08/20257:38 am" or "29/01/2026 8:12 am"
+    date_str = date_str.strip()
+    
+    # Try to extract just the date part (DD/MM/YYYY)
+    date_match = re.match(r'(\d{1,2}/\d{1,2}/\d{4})', date_str)
+    if date_match:
+        date_part = date_match.group(1)
+        try:
+            return datetime.strptime(date_part, "%d/%m/%Y")
+        except ValueError:
+            pass
+    
+    # Try other formats
+    for fmt in ["%d/%m/%Y", "%d %b %Y", "%Y-%m-%d", "%d/%m/%Y %H:%M %p", "%d/%m/%Y%H:%M %p"]:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+    
+    return None
+
+
+def format_asx_date(date_str: str) -> str:
+    """Format ASX date string to clean format without time."""
+    parsed = parse_asx_date(date_str)
+    if parsed:
+        return parsed.strftime("%d %b %Y")  # e.g., "26 Aug 2025"
+    return date_str  # Return original if parsing fails
+
+
 def research_new_information(client: anthropic.Anthropic, stock: dict) -> dict:
     """
     Research NEW information about the company in the last 7 days.
-    Sources: ASX announcements + reputable news sources via web search.
+    MUST capture ALL ASX announcements from last 7 days - no filtering.
     Returns structured data for the "New Information" section.
     """
     asx_code = stock['asx_code']
@@ -438,41 +476,41 @@ def research_new_information(client: anthropic.Anthropic, stock: dict) -> dict:
         "no_news_message": "No new information in the last 7 days."
     }
     
-    # Step 1: Check ASX announcements from last 7 days
+    # Step 1: Get ALL ASX announcements from last 7 days - NO FILTERING
     anns = asx_get_announcements(asx_code)
     recent_anns = []
     
     for ann in anns:
-        # Parse date (format: "DD/MM/YYYY" or similar)
-        try:
-            # Try common ASX date formats
-            for fmt in ["%d/%m/%Y", "%d %b %Y", "%Y-%m-%d"]:
-                try:
-                    ann_date = datetime.strptime(ann['date'], fmt)
-                    if ann_date >= seven_days_ago:
-                        recent_anns.append(ann)
-                    break
-                except ValueError:
-                    continue
-        except:
-            # If date parsing fails, include if it looks recent (first few announcements)
-            if len(recent_anns) < 3 and anns.index(ann) < 5:
+        ann_date = parse_asx_date(ann['date'])
+        if ann_date and ann_date >= seven_days_ago:
+            recent_anns.append(ann)
+        elif not ann_date:
+            # If date parsing fails but it's in the first few announcements, include it
+            if len(recent_anns) < 5 and anns.index(ann) < 5:
                 recent_anns.append(ann)
     
-    # Add ASX announcements to result
-    for ann in recent_anns[:3]:  # Max 3 recent announcements
+    # Add ALL recent ASX announcements to result (prioritize price-sensitive)
+    # Sort: price-sensitive first, then by date
+    recent_anns.sort(key=lambda x: (not x.get('sensitive', False), x.get('date', '')))
+    
+    for ann in recent_anns[:5]:  # Max 5 recent announcements
+        # Mark price-sensitive announcements
+        ann_type = "ASX Announcement (Price Sensitive)" if ann.get('sensitive') else "ASX Announcement"
+        
         result["items"].append({
-            "type": "ASX Announcement",
+            "type": ann_type,
             "title": ann['title'],
-            "date": ann['date'],
-            "summary": None,  # Will be filled if we download PDF
+            "date": format_asx_date(ann['date']),
+            "summary": None,
             "source_url": ann['pdf_url'],
-            "is_new": True
+            "is_new": True,
+            "price_sensitive": ann.get('sensitive', False)
         })
         result["has_new_info"] = True
     
-    # Step 2: Search for recent news from reputable sources
-    news_prompt = f"""Search for news about {stock['name']} (ASX: {stock['asx_code']}) published in the LAST 7 DAYS ONLY.
+    # Step 2: Search for recent news from reputable sources (skip if we have plenty of ASX news)
+    if len(result["items"]) < 3:
+        news_prompt = f"""Search for news about {stock['name']} (ASX: {stock['asx_code']}) published in the LAST 7 DAYS ONLY.
 
 **ONLY include news from these sources:**
 - Australian Financial Review (AFR)
@@ -480,7 +518,6 @@ def research_new_information(client: anthropic.Anthropic, stock: dict) -> dict:
 - The Australian
 - Bloomberg
 - Reuters
-- Company press releases
 
 **STRICT RULES:**
 - ONLY include articles published within the last 7 days
@@ -504,26 +541,27 @@ After searching, provide JSON only:
 
 If no news from the last 7 days is found, return: {{"news_items": [], "no_recent_news": true}}
 """
-    
-    search_result = call_claude_with_search(client, news_prompt, max_searches=1)
-    
-    try:
-        json_match = re.search(r'\{[\s\S]*\}', search_result)
-        if json_match:
-            news_data = json.loads(json_match.group())
-            for item in news_data.get('news_items', []):
-                result["items"].append({
-                    "type": "News",
-                    "title": item.get('title'),
-                    "date": item.get('publication_date'),
-                    "summary": item.get('summary'),
-                    "source_name": item.get('source_name'),
-                    "source_url": item.get('source_url'),
-                    "is_new": True
-                })
-                result["has_new_info"] = True
-    except (json.JSONDecodeError, AttributeError):
-        pass
+        
+        search_result = call_claude_with_search(client, news_prompt, max_searches=1)
+        
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', search_result)
+            if json_match:
+                news_data = json.loads(json_match.group())
+                for item in news_data.get('news_items', []):
+                    result["items"].append({
+                        "type": "News",
+                        "title": item.get('title'),
+                        "date": item.get('publication_date'),
+                        "summary": item.get('summary'),
+                        "source_name": item.get('source_name'),
+                        "source_url": item.get('source_url'),
+                        "is_new": True,
+                        "price_sensitive": False
+                    })
+                    result["has_new_info"] = True
+        except (json.JSONDecodeError, AttributeError):
+            pass
     
     return result
 
@@ -606,65 +644,56 @@ Provide ONLY the summary, no bullet points or formatting."""
     return result
 
 
-def research_earnings_asx(client: anthropic.Anthropic, stock: dict) -> dict:
+def research_market_update(client: anthropic.Anthropic, stock: dict) -> dict:
     """
-    Research earnings using ASX scraper.
-    Returns structured data compatible with V5 format.
+    Research the LAST MARKET UPDATE - the most recent price-sensitive ASX announcement
+    containing fundamental information that impacts the stock price.
+    
+    This includes: quarterly updates, guidance changes, trading updates, annual/half-year results,
+    capital raises, acquisitions, or any other price-sensitive material.
     """
     asx_code = stock['asx_code']
     
-    # Check cache first
-    cached = load_from_cache(asx_code, 'earnings', EARNINGS_CACHE_DAYS)
+    # Check cache first (cache for 7 days since market updates are more frequent)
+    cached = load_from_cache(asx_code, 'market_update', 7)
     if cached:
         return cached
     
     anns = asx_get_announcements(asx_code)
     if not anns:
         return {
-            "report_type": "Not found",
-            "report_date": "Not found",
-            "period": "Not found",
-            "revenue": "Not found",
-            "npat": "Not found",
-            "ebitda": "Not found",
-            "eps": "Not found",
-            "dividend": "Not found",
+            "update_type": "Not found",
+            "update_date": "Not found",
+            "title": "Not found",
+            "key_financials": "Not found",
             "guidance": "None mentioned",
             "source_url": stock.get('asx_url')
         }
     
-    # Find periodic earnings reports
-    earnings = [a for a in anns if asx_is_periodic_earnings_report(a['title'])]
+    # Get the most recent PRICE-SENSITIVE announcement (ASX marks these clearly)
+    sensitive = [a for a in anns if a.get('sensitive')]
     
-    if not earnings:
+    if not sensitive:
         return {
-            "report_type": "Not found",
-            "report_date": "Not found",
-            "period": "Not found",
-            "revenue": "Not found",
-            "npat": "Not found",
-            "ebitda": "Not found",
-            "eps": "Not found",
-            "dividend": "Not found",
+            "update_type": "Not found",
+            "update_date": "Not found",
+            "title": "No recent price-sensitive announcements",
+            "key_financials": "Not found",
             "guidance": "None mentioned",
             "source_url": stock.get('asx_url')
         }
     
-    # Process the latest earnings report
-    latest = earnings[0]
-    print(f"      Downloading: {latest['title'][:40]}...")
+    # Use the MOST RECENT price-sensitive announcement
+    latest = sensitive[0]
+    print(f"      Downloading: {latest['title'][:50]}...")
     
     pdf_bytes = asx_download_pdf(latest['pdf_url'])
     if not pdf_bytes:
         return {
-            "report_type": "Not found",
-            "report_date": latest['date'],
-            "period": "Not found",
-            "revenue": "Not found",
-            "npat": "Not found",
-            "ebitda": "Not found",
-            "eps": "Not found",
-            "dividend": "Not found",
+            "update_type": "Announcement",
+            "update_date": format_asx_date(latest['date']),
+            "title": latest['title'],
+            "key_financials": "Unable to download PDF",
             "guidance": "None mentioned",
             "source_url": latest['pdf_url']
         }
@@ -672,20 +701,16 @@ def research_earnings_asx(client: anthropic.Anthropic, stock: dict) -> dict:
     text = asx_extract_text(pdf_bytes)
     if not text:
         return {
-            "report_type": "Not found",
-            "report_date": latest['date'],
-            "period": "Not found",
-            "revenue": "Not found",
-            "npat": "Not found",
-            "ebitda": "Not found",
-            "eps": "Not found",
-            "dividend": "Not found",
+            "update_type": "Announcement",
+            "update_date": format_asx_date(latest['date']),
+            "title": latest['title'],
+            "key_financials": "Unable to extract text from PDF",
             "guidance": "None mentioned",
             "source_url": latest['pdf_url']
         }
     
-    # Use Claude to extract financial metrics (V7: now includes growth rates)
-    prompt = f"""Analyze this ASX HISTORICAL earnings report and extract ACTUAL reported financial metrics.
+    # Use Claude to extract key information from any type of market update
+    prompt = f"""Analyze this ASX price-sensitive announcement and extract the key information that would impact the stock price.
 
 Title: {latest['title']}
 Date: {latest['date']}
@@ -693,60 +718,59 @@ Date: {latest['date']}
 Content:
 {text[:10000]}
 
-**CRITICAL REQUIREMENTS:**
-- This must be a HISTORICAL financial report with ACTUAL numbers (not projections or forecasts)
-- You must find REAL revenue and/or operating income figures that were actually reported
-- If this is NOT a proper earnings report with real financial numbers, return "Not found" for all fields
-- For each metric, include the GROWTH RATE vs prior comparable period (pcp) if mentioned (e.g. "+12% pcp" or "-5% YoY")
+This could be ANY type of market update: quarterly results, half-year/annual results, trading update, guidance change, capital raising, acquisition, or other material announcement.
 
 Provide your response in EXACTLY this JSON format (no other text):
 {{
-    "report_type": "Annual/Half-Year/Quarterly or 'Not found' if not a real earnings report",
-    "report_date": "{latest['date']}",
-    "period": "e.g. FY25 or H1 FY26",
-    "revenue": "ACTUAL reported revenue with currency AND growth rate e.g. '$1.2B (+12% pcp)' or 'Not found'",
-    "operating_income": "ACTUAL operating income/EBIT with growth rate e.g. '$200M (+8% pcp)' or 'Not found'",
-    "npat": "ACTUAL net profit after tax with growth rate e.g. '$150M (-3% pcp)' or 'Not found'",
-    "ebitda": "ACTUAL EBITDA figure with growth rate or 'Not found'",
-    "eps": "ACTUAL earnings per share with growth rate e.g. '45.2c (+5% pcp)' or 'Not found'",
-    "dividend": "dividend info e.g. '25c fully franked' or 'Not found'",
-    "guidance": "forward guidance summary or 'None mentioned'"
+    "update_type": "Type of update (e.g., 'Annual Results FY25', 'Quarterly Update Q2 FY26', 'Trading Update', 'Capital Raising', 'Guidance Upgrade', 'Acquisition Announcement', etc.)",
+    "key_financials": "The MOST IMPORTANT financial metrics or numbers from this announcement. For results: include Revenue, NPAT, EPS, Dividend if available. For trading updates: include any metrics mentioned. For capital raises: include size and terms. For guidance: include the specific numbers. Format as a concise string with key metrics separated by ' | '. Example: 'NPAT: $180M (+31%) | EPS: 171.75c | Dividend: 66c fully franked'. If no financials, describe the key material information.",
+    "guidance": "Any forward-looking guidance, outlook, or forecasts mentioned. Include specific numbers if provided. If none, return 'None mentioned'."
 }}
 
 **RULES:**
-- Only report ACTUAL numbers from the document - do NOT estimate or calculate
-- Revenue OR Operating Income must be found for this to be a valid earnings report
-- If you cannot find actual historical financial metrics, this is not a proper earnings report
-- Always include growth rate/change vs prior period if mentioned in the document (pcp, YoY, etc.)"""
+- Extract the ACTUAL numbers from the document
+- Focus on the most material information that would move the stock price
+- Be specific with numbers - include percentages, currency amounts, comparisons to prior periods
+- If this is a capital raising, include the size, price, and discount
+- If this is an acquisition, include the target and price"""
 
     response = call_claude_analyze(client, prompt)
     
     try:
         json_match = re.search(r'\{[\s\S]*\}', response)
         if json_match:
-            earnings_data = json.loads(json_match.group())
-            earnings_data['source_url'] = latest['pdf_url']
+            update_data = json.loads(json_match.group())
+            result = {
+                "update_type": update_data.get('update_type', 'Announcement'),
+                "update_date": format_asx_date(latest['date']),
+                "title": latest['title'],
+                "key_financials": update_data.get('key_financials', 'Not found'),
+                "guidance": update_data.get('guidance', 'None mentioned'),
+                "source_url": latest['pdf_url']
+            }
             
             # Cache successful results
-            if earnings_data.get('report_type') != 'Not found':
-                save_to_cache(asx_code, 'earnings', earnings_data)
+            if result.get('key_financials') != 'Not found':
+                save_to_cache(asx_code, 'market_update', result)
             
-            return earnings_data
+            return result
     except (json.JSONDecodeError, AttributeError):
         pass
     
     return {
-        "report_type": "Not found",
-        "report_date": latest['date'],
-        "period": "Not found",
-        "revenue": "Not found",
-        "npat": "Not found",
-        "ebitda": "Not found",
-        "eps": "Not found",
-        "dividend": "Not found",
+        "update_type": "Announcement",
+        "update_date": format_asx_date(latest['date']),
+        "title": latest['title'],
+        "key_financials": "Unable to extract - see source",
         "guidance": "None mentioned",
         "source_url": latest['pdf_url']
     }
+
+
+# Keep the old function name as alias for backwards compatibility during transition
+def research_earnings_asx(client: anthropic.Anthropic, stock: dict) -> dict:
+    """Deprecated - use research_market_update instead."""
+    return research_market_update(client, stock)
 
 
 # ============================================================================
@@ -814,6 +838,52 @@ After searching, provide the following in JSON format only (no other text):
         json_match = re.search(r'\{[\s\S]*\}', result)
         if json_match:
             data = json.loads(json_match.group())
+            
+            # POST-PROCESS: Filter out items older than 2 months
+            if 'data_points' in data:
+                filtered_points = []
+                two_months_ago = datetime.now() - timedelta(days=60)
+                
+                for point in data['data_points']:
+                    if point is None:
+                        continue
+                    pub_date_str = point.get('publication_date', '')
+                    
+                    # Try to parse the date and validate it's within 2 months
+                    is_valid = False
+                    for fmt in ["%B %d, %Y", "%d %B %Y", "%B %Y", "%d/%m/%Y", "%Y-%m-%d", 
+                                "%b %d, %Y", "%d %b %Y", "%b %Y"]:
+                        try:
+                            pub_date = datetime.strptime(pub_date_str, fmt)
+                            if pub_date >= two_months_ago:
+                                is_valid = True
+                                # Also check if it's within last 7 days for [NEW] tag
+                                seven_days_ago = datetime.now() - timedelta(days=7)
+                                point['is_new'] = pub_date >= seven_days_ago
+                            break
+                        except ValueError:
+                            continue
+                    
+                    # If we couldn't parse the date, check for year indicators
+                    if not is_valid and pub_date_str:
+                        # Reject if contains old years
+                        if any(yr in pub_date_str for yr in ['2024', '2023', '2022', '2021', '2020']):
+                            continue
+                        # Accept if contains recent months
+                        if '2026' in pub_date_str or '2025' in pub_date_str:
+                            # Check for months that are definitely > 2 months old
+                            if any(m in pub_date_str.lower() for m in ['january 2025', 'february 2025', 'march 2025', 
+                                                                         'april 2025', 'may 2025', 'june 2025',
+                                                                         'july 2025', 'august 2025', 'september 2025',
+                                                                         'october 2025']):
+                                continue  # Skip old 2025 dates
+                            is_valid = True
+                    
+                    if is_valid:
+                        filtered_points.append(point)
+                
+                data['data_points'] = filtered_points
+            
             return data
     except (json.JSONDecodeError, AttributeError):
         pass
@@ -905,6 +975,56 @@ If NO competitive news was found within the 2-month window, return:
         json_match = re.search(r'\{[\s\S]*\}', result)
         if json_match:
             competitor_data = json.loads(json_match.group())
+            
+            # POST-PROCESS: Filter out items older than 2 months
+            if 'competitor_news' in competitor_data:
+                filtered_news = []
+                two_months_ago = datetime.now() - timedelta(days=60)
+                
+                for item in competitor_data['competitor_news']:
+                    if item is None:
+                        continue
+                    pub_date_str = item.get('publication_date', '')
+                    
+                    # Try to parse the date and validate it's within 2 months
+                    is_valid = False
+                    for fmt in ["%B %d, %Y", "%d %B %Y", "%B %Y", "%d/%m/%Y", "%Y-%m-%d", 
+                                "%b %d, %Y", "%d %b %Y", "%b %Y"]:
+                        try:
+                            pub_date = datetime.strptime(pub_date_str, fmt)
+                            if pub_date >= two_months_ago:
+                                is_valid = True
+                                # Also check if it's within last 7 days for [NEW] tag
+                                seven_days_ago = datetime.now() - timedelta(days=7)
+                                item['is_new'] = pub_date >= seven_days_ago
+                            break
+                        except ValueError:
+                            continue
+                    
+                    # If we couldn't parse the date, check for year indicators
+                    if not is_valid and pub_date_str:
+                        # Reject if contains old years
+                        if any(yr in pub_date_str for yr in ['2024', '2023', '2022', '2021', '2020']):
+                            continue
+                        # Accept if contains recent months
+                        if '2026' in pub_date_str or '2025' in pub_date_str:
+                            # Check for months that are definitely > 2 months old
+                            if any(m in pub_date_str.lower() for m in ['january 2025', 'february 2025', 'march 2025', 
+                                                                         'april 2025', 'may 2025', 'june 2025',
+                                                                         'july 2025', 'august 2025', 'september 2025',
+                                                                         'october 2025']):
+                                continue  # Skip old 2025 dates
+                            is_valid = True
+                    
+                    if is_valid:
+                        filtered_news.append(item)
+                
+                competitor_data['competitor_news'] = filtered_news
+                
+                # Update no_recent_news flag if all items were filtered out
+                if not filtered_news:
+                    competitor_data['no_recent_news'] = True
+                    competitor_data['no_recent_news_note'] = "No material competitive announcements found within the last 2 months."
     except (json.JSONDecodeError, AttributeError):
         pass
     
@@ -1027,13 +1147,13 @@ def save_to_cache(asx_code: str, cache_type: str, data: dict):
 # HTML FORMATTING
 # ============================================================================
 
-def format_stock_html(stock: dict, price_data: dict, new_info: dict, earnings: dict, 
+def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_update: dict, 
                       industry: dict, competitors: dict, stock_num: int) -> str:
     """Format all researched data into HTML."""
     
     price_data = price_data or {}
     new_info = new_info or {}
-    earnings = earnings or {}
+    market_update = market_update or {}
     industry = industry or {}
     competitors = competitors or {}
     
@@ -1048,11 +1168,15 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, earnings: d
 <strong style="color:#2980b9;">PREVIOUS ({price_data.get('previous_date', 'N/A')}):</strong> A${price_data.get('previous_close', 0):.2f} | 
 <strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};">{change_sign}{change_pct:.2f}%</span>"""
     
-    # NEW INFORMATION section (replaces "Reason for Move")
+    # NEW INFORMATION section - ALL ASX announcements from last 7 days
     if new_info.get('has_new_info') and new_info.get('items'):
         new_info_items = []
         for item in new_info['items']:
-            item_html = f"<strong>{item.get('type', 'News')}:</strong> {item.get('title', 'Untitled')}"
+            # Highlight price-sensitive announcements
+            if item.get('price_sensitive'):
+                item_html = f"<strong style=\"color:#e74c3c;\">⚡ {item.get('type', 'News')}:</strong> {item.get('title', 'Untitled')}"
+            else:
+                item_html = f"<strong>{item.get('type', 'News')}:</strong> {item.get('title', 'Untitled')}"
             if item.get('date'):
                 item_html += f" ({item['date']})"
             if item.get('source_url'):
@@ -1064,55 +1188,16 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, earnings: d
     else:
         new_info_html = "<li><em>No new information in the last 7 days.</em></li>"
     
-    # V7: Earnings section - reformatted to bullet points
-    earn = earnings or {}
-    earn_url = earn.get('source_url') or stock.get('asx_url', '#')
+    # LAST MARKET UPDATE section (replaces old Earnings section)
+    update_url = market_update.get('source_url') or stock.get('asx_url', '#')
     
-    # Build report line
-    report_type = earn.get('report_type', 'Not found')
-    period = earn.get('period', 'Not found')
-    if report_type != 'Not found' and period != 'Not found':
-        report_line = f"{report_type} ({period})"
-    elif report_type != 'Not found':
-        report_line = report_type
+    if market_update.get('update_type') and market_update.get('update_type') != 'Not found':
+        market_update_html = f"""<strong>Type:</strong> {market_update.get('update_type')}<br>
+<strong>Date:</strong> {market_update.get('update_date', 'Not found')}<br>
+<strong>Key Financials:</strong> {market_update.get('key_financials', 'Not found')}<br>
+<strong>Guidance:</strong> {market_update.get('guidance', 'None mentioned')}"""
     else:
-        report_line = "Not found"
-    
-    # Build date line
-    report_date = earn.get('report_date', 'Not found')
-    
-    # Build key financial metrics line (combine all metrics in one line)
-    metrics = []
-    if earn.get('revenue') and earn.get('revenue') != 'Not found':
-        metrics.append(f"Revenue: {earn['revenue']}")
-    if earn.get('operating_income') and earn.get('operating_income') != 'Not found':
-        metrics.append(f"Operating Income: {earn['operating_income']}")
-    if earn.get('npat') and earn.get('npat') != 'Not found':
-        metrics.append(f"NPAT: {earn['npat']}")
-    if earn.get('ebitda') and earn.get('ebitda') != 'Not found':
-        metrics.append(f"EBITDA: {earn['ebitda']}")
-    if earn.get('eps') and earn.get('eps') != 'Not found':
-        metrics.append(f"EPS: {earn['eps']}")
-    if earn.get('dividend') and earn.get('dividend') != 'Not found':
-        metrics.append(f"Dividend: {earn['dividend']}")
-    
-    metrics_line = " | ".join(metrics) if metrics else "Not found"
-    
-    # Build guidance line
-    guidance = earn.get('guidance', 'None mentioned')
-    if guidance == 'None mentioned' or not guidance:
-        guidance_line = "None mentioned"
-    else:
-        guidance_line = guidance
-    
-    # Assemble earnings HTML as bullet points
-    earnings_html = f"""<ul style="margin:5px 0 15px 20px;line-height:1.8;">
-<li><strong>Report:</strong> {report_line}</li>
-<li><strong>Date:</strong> {report_date}</li>
-<li><strong>Key Financials:</strong> {metrics_line}</li>
-<li><strong>Guidance:</strong> {guidance_line}</li>
-<li><strong>Source:</strong> <a href="{earn_url}" style="color:#3498db;">View Report</a></li>
-</ul>"""
+        market_update_html = "No recent price-sensitive market update found."
     
     # Industry dynamics - with [NEW] tag for items from last 7 days
     ind_points = industry.get('data_points') or []
@@ -1203,7 +1288,7 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, earnings: d
         
         competitor_html = "\n".join(comp_items) if comp_items else "<li>No competitor news from the last 2 months.</li>"
     
-    # Assemble HTML (V7: earnings section now uses bullet points)
+    # Assemble HTML
     html = f"""
 <h2 style="color:#34495e;margin-top:30px;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
 {stock_num}. {stock['name']} ({stock['ticker']})
@@ -1221,9 +1306,10 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, earnings: d
 </ul>
 
 <p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">LAST EARNINGS REPORT:</strong>
+<strong style="color:#2980b9;">LAST MARKET UPDATE:</strong><br>
+{market_update_html}<br>
+<strong>Source:</strong> <a href="{update_url}" style="color:#3498db;">View Announcement</a>
 </p>
-{earnings_html}
 
 <p style="margin:15px 0;line-height:1.6;">
 <strong style="color:#2980b9;">INDUSTRY DYNAMICS (Last 2 Months):</strong>
@@ -1264,7 +1350,7 @@ Berkholts Stock Summaries - {today}
 {content}
 
 <p style="color:#7f8c8d;font-size:12px;margin-top:30px;text-align:center;">
-Generated by Berkholts Stock Summary System V7<br>
+Generated by Berkholts Stock Summary System V6<br>
 Prices: Yahoo Finance | Announcements & Earnings: ASX Direct | Industry & Competitors: Claude AI<br>
 Sources: ASX announcements, trade publications, AFR, WSJ, SMH, The Australian<br>
 </p>
@@ -1322,7 +1408,7 @@ def send_email(html: str, recipient: str, smtp_email: str, smtp_password: str, s
 
 def main():
     print("=" * 70)
-    print("🚀 Berkholts Stock Emailer - V7 (Bullet Point Earnings)")
+    print("🚀 Berkholts Stock Emailer - V6 (ASX Scraper Integration)")
     print(f"⏰ Started: {datetime.now()}")
     print("=" * 70)
     
@@ -1375,17 +1461,18 @@ def main():
         else:
             print(f"✅ A${price['yesterday_close']:.2f} ({price['change_percent']:+.2f}%)")
         
-        # Step 2: Research NEW INFORMATION (last 7 days - ASX + news search)
+        # Step 2: Research NEW INFORMATION (last 7 days - ALL ASX announcements)
         print("   📰 Researching new information (last 7 days)...", end=" ")
         new_info = research_new_information(client, stock)
-        new_info_status = "✅" if new_info.get('has_new_info') else "⚠️ (none)"
+        new_info_count = len(new_info.get('items', []))
+        new_info_status = f"✅ ({new_info_count} items)" if new_info.get('has_new_info') else "⚠️ (none)"
         print(new_info_status)
         
-        # Step 3: Research earnings (ASX Scraper with caching)
-        print("   💹 Researching earnings (ASX)...", end=" ")
-        earnings = research_earnings_asx(client, stock)
-        earn_status = "✅" if earnings.get('report_type') != 'Not found' else "⚠️"
-        print(earn_status)
+        # Step 3: Research LAST MARKET UPDATE (most recent price-sensitive announcement)
+        print("   💹 Researching last market update (ASX)...", end=" ")
+        market_update = research_market_update(client, stock)
+        update_status = "✅" if market_update.get('update_type') != 'Not found' else "⚠️"
+        print(update_status)
         
         # Step 4: Research industry (Claude web search - last 2 months)
         print("   🏭 Researching industry (last 2 months)...", end=" ")
@@ -1403,7 +1490,7 @@ def main():
         # Step 6: Format HTML
         print("   📝 Formatting HTML...", end=" ")
         try:
-            stock_html = format_stock_html(stock, price, new_info, earnings, industry, competitors, i)
+            stock_html = format_stock_html(stock, price, new_info, market_update, industry, competitors, i)
             if stock_html is None:
                 stock_html = f"<h2>{stock['name']} - Error formatting data</h2><hr>"
             print("✅")
