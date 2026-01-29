@@ -58,7 +58,13 @@ STOCKS = [
         },
         "competitors": ["Steadfast Group (ASX:SDF)", "PSC Insurance (ASX:PSI)", "Gallagher Australia (unlisted)", "Marsh McLennan (unlisted)"],
         "listed_competitors": ["SDF", "PSI"],
-        "asx_url": "https://www.asx.com.au/markets/company/AUB"
+        "asx_url": "https://www.asx.com.au/markets/company/AUB",
+        "revenue_drivers": {
+            "primary": "Broker commissions as percentage of insurance premiums placed",
+            "key_metrics": ["commercial insurance premium rates", "broker M&A activity Australia", "insurance market hard/soft cycle"],
+            "search_terms": ["Australian commercial insurance premium rates 2026", "insurance broker acquisition Australia"],
+            "what_to_track": "Premium rate increases drive commission revenue; acquisitions drive growth; catastrophe events affect underwriter capacity"
+        }
     },
     {
         "name": "Mineral Resources Limited",
@@ -72,7 +78,14 @@ STOCKS = [
         },
         "competitors": ["Pilbara Minerals (ASX:PLS)", "Fortescue Metals (ASX:FMG)", "IGO Limited (ASX:IGO)", "Liontown Resources (ASX:LTR)"],
         "listed_competitors": ["PLS", "FMG", "IGO"],
-        "asx_url": "https://www.asx.com.au/markets/company/MIN"
+        "asx_url": "https://www.asx.com.au/markets/company/MIN",
+        "revenue_drivers": {
+            "primary": "Lithium spodumene prices (SC6) and iron ore prices (62% Fe)",
+            "key_metrics": ["spodumene SC6 price USD/dmt", "iron ore 62% Fe price USD/t", "lithium carbonate price"],
+            "search_terms": ["spodumene price today", "iron ore price today", "lithium market outlook 2026"],
+            "commodities": ["Spodumene SC6 (target: US$800-1500/dmt)", "Iron Ore 62% Fe (target: US$90-130/t)"],
+            "what_to_track": "Lithium prices are the #1 earnings driver; iron ore volumes from Onslow; mining services contract wins"
+        }
     },
     {
         "name": "HUB24 Limited",
@@ -86,7 +99,13 @@ STOCKS = [
         },
         "competitors": ["Netwealth Group (ASX:NWL)", "Praemium Limited (ASX:PPS)", "Mason Stevens (unlisted)", "AMP Platforms (ASX:AMP)"],
         "listed_competitors": ["NWL", "PPS"],
-        "asx_url": "https://www.asx.com.au/markets/company/HUB"
+        "asx_url": "https://www.asx.com.au/markets/company/HUB",
+        "revenue_drivers": {
+            "primary": "Funds Under Administration (FUA) and platform fees",
+            "key_metrics": ["platform FUA growth", "net inflows", "adviser numbers", "platform market share"],
+            "search_terms": ["wealth platform FUA Australia", "financial adviser movement Australia", "ASX market performance"],
+            "what_to_track": "FUA growth drives revenue (mix of net inflows + market performance); adviser wins/losses; platform fee compression"
+        }
     },
     {
         "name": "Macquarie Group Limited",
@@ -100,7 +119,13 @@ STOCKS = [
         },
         "competitors": ["ANZ Group (ASX:ANZ)", "Commonwealth Bank (ASX:CBA)", "Morgan Stanley (global)", "Goldman Sachs (global)"],
         "listed_competitors": ["ANZ", "CBA"],
-        "asx_url": "https://www.asx.com.au/markets/company/MQG"
+        "asx_url": "https://www.asx.com.au/markets/company/MQG",
+        "revenue_drivers": {
+            "primary": "M&A/IPO deal fees, asset management AUM, commodities trading",
+            "key_metrics": ["Australian M&A deal volume", "IPO pipeline Australia", "infrastructure deal flow", "commodities trading volumes"],
+            "search_terms": ["Australian M&A activity 2026", "infrastructure investment Australia", "Macquarie deal"],
+            "what_to_track": "Deal flow (M&A advisory, IPO underwriting); infrastructure transactions; commodities trading revenue is volatile"
+        }
     },
     {
         "name": "Charter Hall Group",
@@ -114,7 +139,13 @@ STOCKS = [
         },
         "competitors": ["Goodman Group (ASX:GMG)", "Dexus (ASX:DXS)", "GPT Group (ASX:GPT)", "Centuria Capital (ASX:CNI)"],
         "listed_competitors": ["GMG", "DXS", "GPT"],
-        "asx_url": "https://www.asx.com.au/markets/company/CHC"
+        "asx_url": "https://www.asx.com.au/markets/company/CHC",
+        "revenue_drivers": {
+            "primary": "Assets Under Management (AUM), property transaction fees, base management fees",
+            "key_metrics": ["commercial property cap rates", "office vacancy rates Sydney Melbourne", "industrial property yields", "institutional capital flows"],
+            "search_terms": ["Australian commercial property cap rates", "Sydney office vacancy rate", "industrial property investment Australia"],
+            "what_to_track": "AUM growth drives base fees; property transactions drive performance fees; cap rate compression/expansion affects valuations"
+        }
     },
     {
         "name": "CSL Limited",
@@ -128,7 +159,13 @@ STOCKS = [
         },
         "competitors": ["Takeda Pharmaceutical (global)", "Grifols (global)", "BioMarin (global)", "Sanofi (vaccines)"],
         "listed_competitors": [],
-        "asx_url": "https://www.asx.com.au/markets/company/CSL"
+        "asx_url": "https://www.asx.com.au/markets/company/CSL",
+        "revenue_drivers": {
+            "primary": "Immunoglobulin (Ig) sales and pricing, plasma collection volumes, vaccine sales",
+            "key_metrics": ["immunoglobulin Ig pricing", "plasma collection volumes US", "influenza vaccine uptake", "albumin pricing"],
+            "search_terms": ["immunoglobulin price trend", "plasma collection volumes 2026", "US flu vaccination rates", "CSL Behring"],
+            "what_to_track": "Ig pricing is the key margin driver; plasma collection costs; Seqirus vaccine sales are seasonal; gene therapy pipeline progress"
+        }
     },
     {
         "name": "Dicker Data Limited",
@@ -142,7 +179,13 @@ STOCKS = [
         },
         "competitors": ["Ingram Micro Australia (unlisted)", "Synnex Australia (unlisted)", "Westcon-Comstor (unlisted)", "Sektor (unlisted)"],
         "listed_competitors": [],
-        "asx_url": "https://www.asx.com.au/markets/company/DDR"
+        "asx_url": "https://www.asx.com.au/markets/company/DDR",
+        "revenue_drivers": {
+            "primary": "Enterprise IT spending, vendor partnerships, hardware vs services mix",
+            "key_metrics": ["Australian IT spending growth", "enterprise hardware sales", "cloud infrastructure demand", "AI server demand"],
+            "search_terms": ["Australian enterprise IT spending 2026", "Cisco Dell HP Australia", "AI infrastructure demand Australia"],
+            "what_to_track": "Enterprise IT refresh cycles; cloud/AI infrastructure spending; key vendor (Cisco, Microsoft, Dell) product launches; margin on services vs hardware"
+        }
     },
     {
         "name": "Hansen Technologies Limited",
@@ -156,7 +199,13 @@ STOCKS = [
         },
         "competitors": ["Oracle Utilities (global)", "SAP (global)", "Gentrack Group (NZX:GTK)", "TechnologyOne (ASX:TNE)"],
         "listed_competitors": ["TNE"],
-        "asx_url": "https://www.asx.com.au/markets/company/HSN"
+        "asx_url": "https://www.asx.com.au/markets/company/HSN",
+        "revenue_drivers": {
+            "primary": "Recurring software license revenue, new contract wins, acquisitions",
+            "key_metrics": ["utility billing contract wins", "energy retailer M&A", "smart meter rollout", "utility software deals"],
+            "search_terms": ["utility billing software contract", "energy retailer Australia", "smart meter rollout Australia", "Hansen Technologies contract"],
+            "what_to_track": "New contract wins (long sales cycles); energy retailer consolidation affects customer base; recurring revenue growth; bolt-on acquisitions"
+        }
     },
     {
         "name": "Growthpoint Properties Australia",
@@ -170,7 +219,13 @@ STOCKS = [
         },
         "competitors": ["Dexus (ASX:DXS)", "GPT Group (ASX:GPT)", "Centuria Office REIT (ASX:COF)", "Charter Hall (ASX:CHC)"],
         "listed_competitors": ["DXS", "GPT", "COF", "CHC"],
-        "asx_url": "https://www.asx.com.au/markets/company/GOZ"
+        "asx_url": "https://www.asx.com.au/markets/company/GOZ",
+        "revenue_drivers": {
+            "primary": "Rental income, occupancy rates, property valuations",
+            "key_metrics": ["Sydney office vacancy rate", "Melbourne office vacancy rate", "industrial property vacancy", "office cap rates", "REIT distribution yields"],
+            "search_terms": ["Sydney CBD office vacancy rate 2026", "Melbourne office vacancy", "Australian industrial property market", "office cap rates Australia"],
+            "what_to_track": "Office occupancy (66% of portfolio); industrial occupancy (34%); rent review outcomes; cap rate movements affect NTA; interest rate impact on valuations"
+        }
     },
     {
         "name": "Propel Funeral Partners Limited",
@@ -184,7 +239,13 @@ STOCKS = [
         },
         "competitors": ["InvoCare (acquired by TPG Capital, unlisted)", "Independent family-owned funeral homes", "Southern Metropolitan Cemeteries Trust (unlisted)"],
         "listed_competitors": [],
-        "asx_url": "https://www.asx.com.au/markets/company/PFP"
+        "asx_url": "https://www.asx.com.au/markets/company/PFP",
+        "revenue_drivers": {
+            "primary": "Number of funerals performed, average revenue per funeral, acquisitions",
+            "key_metrics": ["Australian death rate", "mortality statistics ABS", "funeral home acquisitions", "cremation vs burial rates"],
+            "search_terms": ["Australian death rate statistics 2026", "ABS deaths Australia", "funeral home acquisition Australia", "cremation rate Australia"],
+            "what_to_track": "Death volumes (aging population is tailwind); average revenue per funeral; acquisition pipeline (fragmented industry); cremation vs burial mix"
+        }
     },
 ]
 
@@ -778,58 +839,69 @@ def research_earnings_asx(client: anthropic.Anthropic, stock: dict) -> dict:
 # ============================================================================
 
 def research_industry(client: anthropic.Anthropic, stock: dict) -> dict:
-    """Research industry dynamics with authoritative sources. Max 2 months old, flag items from last 7 days as NEW."""
+    """Research industry dynamics focused on REVENUE DRIVERS. Max 2 months old, flag items from last 7 days as NEW."""
     industry_pubs = ", ".join(stock.get('industry_publications', []))
-    supply_chain = stock.get('supply_chain', {})
-    customers = supply_chain.get('customers', 'N/A')
-    suppliers = supply_chain.get('suppliers', 'N/A')
     
-    prompt = f"""You are conducting industry research for {stock['name']} (ASX: {stock['asx_code']}) in the {stock['industry']} sector.
+    # Get revenue driver information
+    revenue_drivers = stock.get('revenue_drivers', {})
+    primary_driver = revenue_drivers.get('primary', 'general business performance')
+    key_metrics = revenue_drivers.get('key_metrics', [])
+    search_terms = revenue_drivers.get('search_terms', [f"{stock['industry']} Australia"])
+    what_to_track = revenue_drivers.get('what_to_track', '')
+    commodities = revenue_drivers.get('commodities', [])
+    
+    # Build commodity section if applicable
+    commodity_section = ""
+    if commodities:
+        commodity_section = f"""
+**COMMODITY PRICES TO FIND (CRITICAL):**
+{chr(10).join(f'- {c}' for c in commodities)}
+You MUST search for current prices of these commodities and include them in your response.
+"""
+    
+    prompt = f"""You are researching factors that drive REVENUE and EARNINGS for {stock['name']} (ASX: {stock['asx_code']}).
+
+**PRIMARY REVENUE DRIVER:** {primary_driver}
+
+**KEY METRICS TO FIND:**
+{chr(10).join(f'- {m}' for m in key_metrics)}
+{commodity_section}
+**CONTEXT:** {what_to_track}
+
+**SEARCH STRATEGY:**
+Search for: {', '.join(f'"{t}"' for t in search_terms[:2])}
 
 **STRICT DATE REQUIREMENTS:**
 - ONLY include information published within the LAST 2 MONTHS (60 days)
-- For each item, you MUST verify and include the publication date
-- If you cannot verify the date is within 2 months, DO NOT include it
 - Mark items published in the LAST 7 DAYS with "is_new": true
 
-**SOURCE HIERARCHY (prioritize in this order):**
+**SOURCE HIERARCHY:**
 1. Industry-specific trade publications: {industry_pubs}
-2. Tier-one financial news: Australian Financial Review (AFR), Wall Street Journal (WSJ), Sydney Morning Herald (SMH), The Australian, Bloomberg, Reuters
-3. Company press releases and ASX announcements
-4. Other reputable business journalism with clear editorial standards
+2. Tier-one financial news: AFR, Bloomberg, Reuters, WSJ
+3. Company announcements and data providers
 
-**EXCLUDED SOURCES - DO NOT CITE:**
-- IBISWorld, Mordor Intelligence, or similar market research aggregators
-- Any article older than 2 months
-- If you cannot verify whether a source is an aggregator, exclude it
+**EXCLUDED:** IBISWorld, Mordor Intelligence, generic market research reports
 
-**SUPPLY CHAIN CONTEXT:**
-- Key customers: {customers}
-- Key suppliers: {suppliers}
-- Include relevant supply chain developments if material to {stock['name']}
-
-Search for: "{stock['industry']} Australia 2025 2026"
-
-After searching, provide the following in JSON format only (no other text):
+After searching, provide JSON only (no other text):
 {{
     "data_points": [
         {{
-            "fact": "A specific statistic, trend, or development with numbers/percentages where available",
-            "source_name": "Name of the publication (e.g., 'Australian Financial Review')",
-            "source_url": "Actual URL from search results, or null if not available",
-            "publication_date": "REQUIRED - exact date from the article (e.g., 'January 15, 2026')",
+            "fact": "Specific data point with NUMBERS - e.g. prices, rates, percentages, volumes",
+            "source_name": "Publication name",
+            "source_url": "URL or null",
+            "publication_date": "REQUIRED - exact date (e.g., 'January 15, 2026')",
             "is_new": true/false,
-            "relevance": "How this specifically relates to {stock['name']} or its supply chain"
+            "relevance": "How this specifically impacts {stock['name']}'s revenue or earnings"
         }}
     ]
 }}
 
 **CRITICAL RULES:**
-- Provide 2-4 specific data points with actual numbers/percentages where possible
-- EVERY item must have a verified publication_date within the last 2 months
-- Set "is_new": true if published within the last 7 days, otherwise false
-- Only include facts you actually found in search results - do NOT fabricate statistics
-- If no recent industry news exists within 2 months, return empty data_points array
+- Focus on data that DIRECTLY impacts {stock['name']}'s revenue: {primary_driver}
+- Include SPECIFIC NUMBERS (prices, rates, percentages, volumes)
+- Every fact must explain its impact on earnings/revenue in the relevance field
+- If searching for commodity prices, include the current price with date
+- Return empty array if no relevant data within 2 months
 """
     
     result = call_claude_with_search(client, prompt, max_searches=2)
@@ -1236,9 +1308,9 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
                 item += f'<br><em style="color:#7f8c8d;font-size:0.9em;">→ {relevance}</em>'
             
             ind_items.append(f'<li>{item}</li>')
-        industry_html = "\n".join(ind_items) if ind_items else "<li>No industry news from the last 2 months.</li>"
+        industry_html = "\n".join(ind_items) if ind_items else "<li>No key driver data found in the last 2 months.</li>"
     else:
-        industry_html = "<li>No industry news from the last 2 months.</li>"
+        industry_html = "<li>No key driver data found in the last 2 months.</li>"
     
     # Competitor dynamics - with [NEW] tag for items from last 7 days
     comp_news = competitors.get('competitor_news') or []
@@ -1312,7 +1384,7 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">INDUSTRY DYNAMICS (Last 2 Months):</strong>
+<strong style="color:#2980b9;">KEY DRIVERS (Last 2 Months):</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
 {industry_html}
@@ -1474,8 +1546,8 @@ def main():
         update_status = "✅" if market_update.get('update_type') != 'Not found' else "⚠️"
         print(update_status)
         
-        # Step 4: Research industry (Claude web search - last 2 months)
-        print("   🏭 Researching industry (last 2 months)...", end=" ")
+        # Step 4: Research KEY DRIVERS (Claude web search - last 2 months)
+        print("   🏭 Researching key drivers (last 2 months)...", end=" ")
         industry = research_industry(client, stock)
         ind_status = "✅" if len(industry.get('data_points', [])) > 0 else "⚠️"
         print(ind_status)
