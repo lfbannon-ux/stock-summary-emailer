@@ -919,7 +919,11 @@ After searching, provide JSON only (no other text):
                 for point in data['data_points']:
                     if point is None:
                         continue
-                    pub_date_str = point.get('publication_date', '')
+                    pub_date_str = point.get('publication_date') or ''
+                    
+                    # Skip if no date provided
+                    if not pub_date_str:
+                        continue
                     
                     # Try to parse the date and validate it's within 2 months
                     is_valid = False
@@ -933,7 +937,7 @@ After searching, provide JSON only (no other text):
                                 seven_days_ago = datetime.now() - timedelta(days=7)
                                 point['is_new'] = pub_date >= seven_days_ago
                             break
-                        except ValueError:
+                        except (ValueError, TypeError):
                             continue
                     
                     # If we couldn't parse the date, check for year indicators
@@ -947,7 +951,7 @@ After searching, provide JSON only (no other text):
                             if any(m in pub_date_str.lower() for m in ['january 2025', 'february 2025', 'march 2025', 
                                                                          'april 2025', 'may 2025', 'june 2025',
                                                                          'july 2025', 'august 2025', 'september 2025',
-                                                                         'october 2025']):
+                                                                         'october 2025', 'november 2025']):
                                 continue  # Skip old 2025 dates
                             is_valid = True
                     
@@ -1056,7 +1060,11 @@ If NO competitive news was found within the 2-month window, return:
                 for item in competitor_data['competitor_news']:
                     if item is None:
                         continue
-                    pub_date_str = item.get('publication_date', '')
+                    pub_date_str = item.get('publication_date') or ''
+                    
+                    # Skip if no date provided
+                    if not pub_date_str:
+                        continue
                     
                     # Try to parse the date and validate it's within 2 months
                     is_valid = False
@@ -1070,7 +1078,7 @@ If NO competitive news was found within the 2-month window, return:
                                 seven_days_ago = datetime.now() - timedelta(days=7)
                                 item['is_new'] = pub_date >= seven_days_ago
                             break
-                        except ValueError:
+                        except (ValueError, TypeError):
                             continue
                     
                     # If we couldn't parse the date, check for year indicators
@@ -1084,7 +1092,8 @@ If NO competitive news was found within the 2-month window, return:
                             if any(m in pub_date_str.lower() for m in ['january 2025', 'february 2025', 'march 2025', 
                                                                          'april 2025', 'may 2025', 'june 2025',
                                                                          'july 2025', 'august 2025', 'september 2025',
-                                                                         'october 2025']):
+                                                                         'october 2025', 'november 2025']):
+                                                                         'october 2025', 'november 2025']):
                                 continue  # Skip old 2025 dates
                             is_valid = True
                     
