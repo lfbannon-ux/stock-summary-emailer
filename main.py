@@ -1,640 +1,1601 @@
 #!/usr/bin/env python3
 """
-AUB Peer Earnings Monitor — Seeking Alpha JSON API approach.
+Berkholts Daily Stock Summary Emailer - V6
+===========================================
+Key changes from V5:
+1. ASX Scraper integration for announcements (replaces Claude web search)
+2. ASX Scraper integration for earnings (replaces Claude web search)
+3. Option C for competitors: Claude web search + ASX scraper supplement for listed competitors
+4. Significant cost reduction (fewer API calls)
 
-Uses SA's internal JSON API endpoints (same ones their frontend calls)
-with authenticated session cookies. No browser/Playwright needed.
+Dependencies (add to requirements.txt):
+- playwright
+- pdfplumber
+- beautifulsoup4
+
+Post-install command for Railway:
+- playwright install chromium
 """
 
 import os
-import re
-import json
-import time
-import random
-import logging
+import sys
 import smtplib
-from datetime import datetime, timedelta, timezone
+import json
+import re
+import tempfile
 from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-
+from datetime import datetime, timedelta
+from pathlib import Path
+import anthropic
+import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
+import pdfplumber
+from playwright.sync_api import sync_playwright
 
-# ---------------------------------------------------------------------------
-# LOGGING
-# ---------------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-5s  %(message)s")
-log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# CONFIG
-# ---------------------------------------------------------------------------
-SMTP_USER = os.environ.get("SMTP_USER", "")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
-EMAIL_TO = os.environ.get("EMAIL_TO", SMTP_USER)
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS", "21"))
-TICKERS_RAW = os.environ.get("TICKERS", "AJG,BRO,MMC,AON,AUBBF,SFGLF")
+# Cache settings
+CACHE_DIR = Path(os.environ.get('CACHE_DIR', '/home/claude/cache'))
+EARNINGS_CACHE_DAYS = 30
 
-# SA cookie values from env
-SA_COOKIES = {
-    "_sasource":        "unknown",
-    "session_id":       os.environ.get("SA_SESSION_ID", ""),
-    "user_id":          os.environ.get("SA_USER_ID", ""),
-    "user_remember_token": os.environ.get("SA_REMEMBER_TOKEN", ""),
-    "machine_cookie":   os.environ.get("SA_MACHINE_COOKIE", ""),
-    "_sp_ses.1cf2":     "*",
-    "sapu":             os.environ.get("SA_SAPU", "12"),
-    "gk_user_access":   "1",
-    "gk_user_access_unpaid": "1",
+# ASX Scraper settings
+ASX_BASE_URL = "https://www.asx.com.au"
+ASX_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
 }
 
-# Add the cookie key if provided
-SA_COOKIE_KEY = os.environ.get("SA_COOKIE_KEY", "")
-if SA_COOKIE_KEY:
-    SA_COOKIES[SA_COOKIE_KEY] = "1"
 
-# Ticker -> full name and SA slug mapping
-TICKER_INFO = {
-    "AJG":   {"name": "Arthur J. Gallagher & Co.", "sa_slug": "ajg"},
-    "BRO":   {"name": "Brown & Brown, Inc.", "sa_slug": "bro"},
-    "MMC":   {"name": "Marsh McLennan Companies", "sa_slug": "mmc"},
-    "AON":   {"name": "Aon plc", "sa_slug": "aon"},
-    "AUBBF": {"name": "AUB Group (OTC)", "sa_slug": "aubbf"},
-    "SFGLF": {"name": "Steadfast Group (OTC)", "sa_slug": "sfglf"},
-    "WTW":   {"name": "Willis Towers Watson", "sa_slug": "wtw"},
-}
-
-TICKERS = [t.strip().upper() for t in TICKERS_RAW.split(",") if t.strip()]
-CUTOFF = datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)
-
-# ---------------------------------------------------------------------------
-# HTTP SESSION SETUP
-# ---------------------------------------------------------------------------
-
-def build_session():
-    """Create a requests.Session with SA cookies and browser-like headers."""
-    s = requests.Session()
-
-    # Set cookies
-    for name, value in SA_COOKIES.items():
-        if value:
-            s.cookies.set(name, value, domain=".seekingalpha.com")
-
-    # Browser-like headers — critical for bypassing bot detection
-    s.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
-        ),
-        "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Referer": "https://seekingalpha.com/",
-        "Origin": "https://seekingalpha.com",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-CH-UA": '"Chromium";v="131", "Not_A Brand";v="24"',
-        "Sec-CH-UA-Mobile": "?0",
-        "Sec-CH-UA-Platform": '"Windows"',
-    })
-
-    cookie_count = sum(1 for v in SA_COOKIES.values() if v)
-    log.info(f"  Session: {cookie_count} cookies loaded")
-
-    # Warm up: hit homepage to collect cf_clearance and any redirect cookies
-    try:
-        log.info("  Warming up session on SA homepage...")
-        warm = s.get(
-            "https://seekingalpha.com/",
-            headers={"Accept": "text/html,application/xhtml+xml"},
-            timeout=30,
-            allow_redirects=True,
-        )
-        log.info(f"  Homepage: HTTP {warm.status_code}, cookies now: {len(s.cookies)}")
-        # Log any new cookies we picked up (especially cf_clearance)
-        for c in s.cookies:
-            if c.name.startswith("cf_") or c.name.startswith("__cf"):
-                log.info(f"  Got Cloudflare cookie: {c.name}")
-        time.sleep(random.uniform(3, 6))
-    except Exception as e:
-        log.warning(f"  Homepage warm-up failed: {e}")
-
-    return s
-
-
-# ---------------------------------------------------------------------------
-# SEEKING ALPHA JSON API — TRANSCRIPT LISTING
-# ---------------------------------------------------------------------------
-
-def get_transcript_links(session, ticker):
-    """
-    Fetch transcript listing for a ticker via SA API.
-    Uses /transcripts endpoint first (proved to work for AJG).
-    """
-    sa_slug = TICKER_INFO.get(ticker, {}).get("sa_slug", ticker.lower())
-    transcripts = []
-
-    # Strategy 1: dedicated /transcripts endpoint (worked for AJG)
-    t_url = f"https://seekingalpha.com/api/v3/symbols/{sa_slug}/transcripts"
-    params = {
-        "include": "author,primaryTickers,secondaryTickers",
-        "page[size]": "10",
-        "page[number]": "1",
-    }
-
-    try:
-        time.sleep(random.uniform(3, 6))
-        resp = session.get(t_url, params=params, timeout=30)
-        log.info(f"    API transcripts: HTTP {resp.status_code}")
-
-        if resp.status_code == 200:
-            data = resp.json()
-            for article in data.get("data", []):
-                attrs = article.get("attributes", {})
-                title = attrs.get("title", "")
-                pub_date_str = attrs.get("publishOn", "")
-
-                try:
-                    if pub_date_str:
-                        pub_date = datetime.fromisoformat(
-                            pub_date_str.replace("Z", "+00:00")
-                        )
-                        if pub_date < CUTOFF:
-                            continue
-                except (ValueError, TypeError):
-                    pass
-
-                article_id = article.get("id", "")
-                slug = attrs.get("slug", "")
-                if article_id:
-                    transcripts.append({
-                        "id": article_id,
-                        "title": title,
-                        "url": f"https://seekingalpha.com/article/{article_id}-{slug}",
-                        "date": pub_date_str,
-                    })
-
-            if transcripts:
-                log.info(f"    Found {len(transcripts)} via transcripts endpoint")
-                return transcripts
-        elif resp.status_code == 403:
-            log.warning(f"    Rate limited on transcripts endpoint, waiting...")
-            time.sleep(random.uniform(10, 20))
-    except Exception as e:
-        log.warning(f"    API transcripts error: {e}")
-
-    # Strategy 3: HTML scrape of transcripts listing
-    html_url = (
-        f"https://seekingalpha.com/symbol/{sa_slug.upper()}/earnings/transcripts"
-    )
-    try:
-        time.sleep(random.uniform(2, 4))
-        resp = session.get(
-            html_url,
-            headers={"Accept": "text/html,application/xhtml+xml"},
-            timeout=30,
-        )
-        log.info(f"    HTML listing: HTTP {resp.status_code}")
-
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "lxml")
-            for link in soup.find_all("a", href=True):
-                href = link["href"]
-                if "earnings-call-transcript" in href:
-                    title = link.get_text(strip=True)
-                    if not title:
-                        continue
-                    full_url = (
-                        href
-                        if href.startswith("http")
-                        else f"https://seekingalpha.com{href}"
-                    )
-                    id_match = re.search(r"/article/(\d+)", full_url)
-                    article_id = id_match.group(1) if id_match else ""
-                    transcripts.append({
-                        "id": article_id,
-                        "title": title,
-                        "url": full_url,
-                        "date": "",
-                    })
-
-            if transcripts:
-                transcripts = transcripts[:3]
-                log.info(f"    Found {len(transcripts)} via HTML scrape")
-                return transcripts
-    except Exception as e:
-        log.warning(f"    HTML scrape error: {e}")
-
-    # Strategy 4: __NEXT_DATA__ from the HTML page
-    try:
-        if resp and resp.status_code == 200:
-            match = re.search(
-                r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-                resp.text,
-                re.DOTALL,
-            )
-            if match:
-                nd = json.loads(match.group(1))
-                # Try common paths in SA's Next.js structure
-                articles = []
-                try:
-                    articles = (
-                        nd.get("props", {})
-                        .get("pageProps", {})
-                        .get("articles", {})
-                        .get("data", [])
-                    )
-                except (AttributeError, TypeError):
-                    pass
-
-                for article in articles:
-                    attrs = article.get("attributes", {})
-                    title = attrs.get("title", "")
-                    article_id = article.get("id", "")
-                    slug = attrs.get("slug", "")
-                    if article_id and "transcript" in title.lower():
-                        transcripts.append({
-                            "id": article_id,
-                            "title": title,
-                            "url": f"https://seekingalpha.com/article/{article_id}-{slug}",
-                            "date": attrs.get("publishOn", ""),
-                        })
-
-                if transcripts:
-                    log.info(f"    Found {len(transcripts)} via __NEXT_DATA__")
-                    return transcripts
-    except Exception as e:
-        log.warning(f"    __NEXT_DATA__ listing error: {e}")
-
-    return transcripts
-
-
-# ---------------------------------------------------------------------------
-# SEEKING ALPHA JSON API — TRANSCRIPT CONTENT
-# ---------------------------------------------------------------------------
-
-def get_transcript_content(session, transcript_info):
-    """
-    Fetch full transcript content via JSON API or HTML fallback.
-    """
-    article_id = transcript_info.get("id", "")
-    url = transcript_info.get("url", "")
-    title = transcript_info.get("title", "")
-
-    # Strategy 1: JSON API for article body
-    if article_id:
-        content_url = f"https://seekingalpha.com/api/v3/articles/{article_id}"
-        params = {
-            "include": "author,primaryTickers,secondaryTickers,otherTags",
+STOCKS = [
+    {
+        "name": "AUB Group Limited",
+        "ticker": "AUB.AX",
+        "asx_code": "AUB",
+        "industry": "insurance broking",
+        "industry_publications": ["Insurance News Australia", "Insurance Business Australia", "Australasian Underwriting"],
+        "supply_chain": {
+            "customers": "SME businesses, corporate clients requiring insurance placement",
+            "suppliers": "underwriters including Lloyd's syndicates, QBE, Allianz"
+        },
+        "competitors": ["Steadfast Group (ASX:SDF)", "PSC Insurance (ASX:PSI)", "Gallagher Australia (unlisted)", "Marsh McLennan (unlisted)"],
+        "listed_competitors": ["SDF", "PSI"],
+        "asx_url": "https://www.asx.com.au/markets/company/AUB",
+        "revenue_drivers": {
+            "primary": "Broker commissions as percentage of insurance premiums placed",
+            "key_metrics": ["commercial insurance premium rates", "broker M&A activity Australia", "insurance market hard/soft cycle"],
+            "search_terms": ["Australian commercial insurance premium rates 2026", "insurance broker acquisition Australia"],
+            "what_to_track": "Premium rate increases drive commission revenue; acquisitions drive growth; catastrophe events affect underwriter capacity"
         }
-        # Try the article API up to 2 times with backoff
-        for attempt in range(2):
-            try:
-                wait = random.uniform(4, 8) if attempt == 0 else random.uniform(15, 25)
-                time.sleep(wait)
-                resp = session.get(content_url, params=params, timeout=30)
-                log.info(f"    Article API (attempt {attempt+1}): HTTP {resp.status_code}")
+    },
+    {
+        "name": "Mineral Resources Limited",
+        "ticker": "MIN.AX",
+        "asx_code": "MIN",
+        "industry": "mining services and lithium production",
+        "industry_publications": ["Mining.com", "Australian Mining", "Mining Weekly", "Fastmarkets"],
+        "supply_chain": {
+            "customers": "lithium buyers including battery manufacturers, iron ore offtakers",
+            "suppliers": "mining equipment providers, crushing/processing contractors"
+        },
+        "competitors": ["Pilbara Minerals (ASX:PLS)", "Fortescue Metals (ASX:FMG)", "IGO Limited (ASX:IGO)", "Liontown Resources (ASX:LTR)"],
+        "listed_competitors": ["PLS", "FMG", "IGO"],
+        "asx_url": "https://www.asx.com.au/markets/company/MIN",
+        "revenue_drivers": {
+            "primary": "Lithium spodumene prices (SC6) and iron ore prices (62% Fe)",
+            "key_metrics": ["spodumene SC6 price USD/dmt", "iron ore 62% Fe price USD/t", "lithium carbonate price"],
+            "search_terms": ["spodumene price today", "iron ore price today", "lithium market outlook 2026"],
+            "commodities": ["Spodumene SC6 (target: US$800-1500/dmt)", "Iron Ore 62% Fe (target: US$90-130/t)"],
+            "what_to_track": "Lithium prices are the #1 earnings driver; iron ore volumes from Onslow; mining services contract wins"
+        }
+    },
+    {
+        "name": "HUB24 Limited",
+        "ticker": "HUB.AX",
+        "asx_code": "HUB",
+        "industry": "wealth management platforms",
+        "industry_publications": ["Financial Standard", "Professional Planner", "Money Management", "Morningstar Australia"],
+        "supply_chain": {
+            "customers": "financial advisers, stockbrokers, accountants, self-directed investors",
+            "suppliers": "custody providers, fund managers, technology vendors"
+        },
+        "competitors": ["Netwealth Group (ASX:NWL)", "Praemium Limited (ASX:PPS)", "Mason Stevens (unlisted)", "AMP Platforms (ASX:AMP)"],
+        "listed_competitors": ["NWL", "PPS"],
+        "asx_url": "https://www.asx.com.au/markets/company/HUB",
+        "revenue_drivers": {
+            "primary": "Funds Under Administration (FUA) and platform fees",
+            "key_metrics": ["platform FUA growth", "net inflows", "adviser numbers", "platform market share"],
+            "search_terms": ["wealth platform FUA Australia", "financial adviser movement Australia", "ASX market performance"],
+            "what_to_track": "FUA growth drives revenue (mix of net inflows + market performance); adviser wins/losses; platform fee compression"
+        }
+    },
+    {
+        "name": "Macquarie Group Limited",
+        "ticker": "MQG.AX",
+        "asx_code": "MQG",
+        "industry": "investment banking and asset management",
+        "industry_publications": ["Infrastructure Investor", "Private Equity International", "Bloomberg Markets", "Reuters Finance"],
+        "supply_chain": {
+            "customers": "institutional investors, infrastructure funds, corporate clients, retail banking customers",
+            "suppliers": "global capital markets, institutional co-investors"
+        },
+        "competitors": ["ANZ Group (ASX:ANZ)", "Commonwealth Bank (ASX:CBA)", "Morgan Stanley (global)", "Goldman Sachs (global)"],
+        "listed_competitors": ["ANZ", "CBA"],
+        "asx_url": "https://www.asx.com.au/markets/company/MQG",
+        "revenue_drivers": {
+            "primary": "M&A/IPO deal fees, asset management AUM, commodities trading",
+            "key_metrics": ["Australian M&A deal volume", "IPO pipeline Australia", "infrastructure deal flow", "commodities trading volumes"],
+            "search_terms": ["Australian M&A activity 2026", "infrastructure investment Australia", "Macquarie deal"],
+            "what_to_track": "Deal flow (M&A advisory, IPO underwriting); infrastructure transactions; commodities trading revenue is volatile"
+        }
+    },
+    {
+        "name": "Charter Hall Group",
+        "ticker": "CHC.AX",
+        "asx_code": "CHC",
+        "industry": "real estate investment and funds management",
+        "industry_publications": ["The Property Council", "Commercial Real Estate", "Australian Property Journal", "PERE News"],
+        "supply_chain": {
+            "customers": "institutional investors, superannuation funds, wholesale investors, tenants",
+            "suppliers": "property developers, construction firms, property managers"
+        },
+        "competitors": ["Goodman Group (ASX:GMG)", "Dexus (ASX:DXS)", "GPT Group (ASX:GPT)", "Centuria Capital (ASX:CNI)"],
+        "listed_competitors": ["GMG", "DXS", "GPT"],
+        "asx_url": "https://www.asx.com.au/markets/company/CHC",
+        "revenue_drivers": {
+            "primary": "Assets Under Management (AUM), property transaction fees, base management fees",
+            "key_metrics": ["commercial property cap rates", "office vacancy rates Sydney Melbourne", "industrial property yields", "institutional capital flows"],
+            "search_terms": ["Australian commercial property cap rates", "Sydney office vacancy rate", "industrial property investment Australia"],
+            "what_to_track": "AUM growth drives base fees; property transactions drive performance fees; cap rate compression/expansion affects valuations"
+        }
+    },
+    {
+        "name": "CSL Limited",
+        "ticker": "CSL.AX",
+        "asx_code": "CSL",
+        "industry": "biotechnology and plasma-derived therapies",
+        "industry_publications": ["BioPharma Dive", "Fierce Pharma", "Endpoints News", "BioWorld"],
+        "supply_chain": {
+            "customers": "hospitals, healthcare providers, governments (vaccines), patients with immunodeficiencies and bleeding disorders",
+            "suppliers": "plasma collection centres (CSL Plasma), pharmaceutical manufacturing equipment providers"
+        },
+        "competitors": ["Takeda Pharmaceutical (global)", "Grifols (global)", "BioMarin (global)", "Sanofi (vaccines)"],
+        "listed_competitors": [],
+        "asx_url": "https://www.asx.com.au/markets/company/CSL",
+        "revenue_drivers": {
+            "primary": "Immunoglobulin (Ig) sales and pricing, plasma collection volumes, vaccine sales",
+            "key_metrics": ["immunoglobulin Ig pricing", "plasma collection volumes US", "influenza vaccine uptake", "albumin pricing"],
+            "search_terms": ["immunoglobulin price trend", "plasma collection volumes 2026", "US flu vaccination rates", "CSL Behring"],
+            "what_to_track": "Ig pricing is the key margin driver; plasma collection costs; Seqirus vaccine sales are seasonal; gene therapy pipeline progress"
+        }
+    },
+    {
+        "name": "Dicker Data Limited",
+        "ticker": "DDR.AX",
+        "asx_code": "DDR",
+        "industry": "IT distribution and technology wholesale",
+        "industry_publications": ["CRN Australia", "ARN (Australian Reseller News)", "iTnews", "Channel Life"],
+        "supply_chain": {
+            "customers": "IT resellers, system integrators, managed service providers across Australia and NZ",
+            "suppliers": "Cisco, Dell Technologies, HP, Lenovo, Microsoft, VMware, Hewlett Packard Enterprise"
+        },
+        "competitors": ["Ingram Micro Australia (unlisted)", "Synnex Australia (unlisted)", "Westcon-Comstor (unlisted)", "Sektor (unlisted)"],
+        "listed_competitors": [],
+        "asx_url": "https://www.asx.com.au/markets/company/DDR",
+        "revenue_drivers": {
+            "primary": "Enterprise IT spending, vendor partnerships, hardware vs services mix",
+            "key_metrics": ["Australian IT spending growth", "enterprise hardware sales", "cloud infrastructure demand", "AI server demand"],
+            "search_terms": ["Australian enterprise IT spending 2026", "Cisco Dell HP Australia", "AI infrastructure demand Australia"],
+            "what_to_track": "Enterprise IT refresh cycles; cloud/AI infrastructure spending; key vendor (Cisco, Microsoft, Dell) product launches; margin on services vs hardware"
+        }
+    },
+    {
+        "name": "Hansen Technologies Limited",
+        "ticker": "HSN.AX",
+        "asx_code": "HSN",
+        "industry": "billing software for energy and utilities",
+        "industry_publications": ["Energy Magazine Australia", "Utility Week", "Smart Energy International", "Comms Business"],
+        "supply_chain": {
+            "customers": "energy retailers, utilities (electricity, gas, water), telecommunications providers, pay-TV operators",
+            "suppliers": "cloud infrastructure providers (AWS, Azure), technology partners"
+        },
+        "competitors": ["Oracle Utilities (global)", "SAP (global)", "Gentrack Group (NZX:GTK)", "TechnologyOne (ASX:TNE)"],
+        "listed_competitors": ["TNE"],
+        "asx_url": "https://www.asx.com.au/markets/company/HSN",
+        "revenue_drivers": {
+            "primary": "Recurring software license revenue, new contract wins, acquisitions",
+            "key_metrics": ["utility billing contract wins", "energy retailer M&A", "smart meter rollout", "utility software deals"],
+            "search_terms": ["utility billing software contract", "energy retailer Australia", "smart meter rollout Australia", "Hansen Technologies contract"],
+            "what_to_track": "New contract wins (long sales cycles); energy retailer consolidation affects customer base; recurring revenue growth; bolt-on acquisitions"
+        }
+    },
+    {
+        "name": "Growthpoint Properties Australia",
+        "ticker": "GOZ.AX",
+        "asx_code": "GOZ",
+        "industry": "real estate investment trust (office and industrial)",
+        "industry_publications": ["The Property Council", "Commercial Real Estate", "Australian Property Journal", "The Urban Developer"],
+        "supply_chain": {
+            "customers": "office tenants (corporates, government), industrial tenants including Woolworths, institutional investors (funds management)",
+            "suppliers": "property developers, construction firms, property managers, facilities management providers"
+        },
+        "competitors": ["Dexus (ASX:DXS)", "GPT Group (ASX:GPT)", "Centuria Office REIT (ASX:COF)", "Charter Hall (ASX:CHC)"],
+        "listed_competitors": ["DXS", "GPT", "COF", "CHC"],
+        "asx_url": "https://www.asx.com.au/markets/company/GOZ",
+        "revenue_drivers": {
+            "primary": "Rental income, occupancy rates, property valuations",
+            "key_metrics": ["Sydney office vacancy rate", "Melbourne office vacancy rate", "industrial property vacancy", "office cap rates", "REIT distribution yields"],
+            "search_terms": ["Sydney CBD office vacancy rate 2026", "Melbourne office vacancy", "Australian industrial property market", "office cap rates Australia"],
+            "what_to_track": "Office occupancy (66% of portfolio); industrial occupancy (34%); rent review outcomes; cap rate movements affect NTA; interest rate impact on valuations"
+        }
+    },
+    {
+        "name": "Propel Funeral Partners Limited",
+        "ticker": "PFP.AX",
+        "asx_code": "PFP",
+        "industry": "death care services (funeral homes, cemeteries, crematoria)",
+        "industry_publications": ["Australian Funeral Directors Association", "Australasian Cemeteries & Crematoria Association"],
+        "supply_chain": {
+            "customers": "families and individuals requiring funeral services across Australia and New Zealand",
+            "suppliers": "casket and coffin manufacturers, memorial and headstone suppliers (Decra), floral providers, vehicle fleet suppliers"
+        },
+        "competitors": ["InvoCare (acquired by TPG Capital, unlisted)", "Independent family-owned funeral homes", "Southern Metropolitan Cemeteries Trust (unlisted)"],
+        "listed_competitors": [],
+        "asx_url": "https://www.asx.com.au/markets/company/PFP",
+        "revenue_drivers": {
+            "primary": "Number of funerals performed, average revenue per funeral, acquisitions",
+            "key_metrics": ["Australian death rate", "mortality statistics ABS", "funeral home acquisitions", "cremation vs burial rates"],
+            "search_terms": ["Australian death rate statistics 2026", "ABS deaths Australia", "funeral home acquisition Australia", "cremation rate Australia"],
+            "what_to_track": "Death volumes (aging population is tailwind); average revenue per funeral; acquisition pipeline (fragmented industry); cremation vs burial mix"
+        }
+    },
+]
 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    attrs = data.get("data", {}).get("attributes", {})
-                    body_html = attrs.get("content", "") or attrs.get("body", "")
 
-                    if body_html:
-                        soup = BeautifulSoup(body_html, "lxml")
-                        text = soup.get_text(separator="\n", strip=True)
-                        if len(text) > 500:
-                            log.info(f"    Got {len(text)} chars via article API")
-                            return text
-                    break  # Got 200 but no content — don't retry
-                elif resp.status_code == 403:
-                    log.warning(f"    Article API 403, backing off...")
-                    continue  # Retry with longer wait
-                else:
-                    break  # Other error, don't retry
-            except Exception as e:
-                log.warning(f"    Article API error: {e}")
-                break
+# ============================================================================
+# YAHOO FINANCE - PRICE DATA
+# ============================================================================
 
-    # Strategy 2: HTML page with ?part=single
-    if url:
-        fetch_url = url
-        if "?part=single" not in fetch_url:
-            fetch_url += "?part=single"
+def get_stock_price(ticker: str) -> dict:
+    """Get accurate stock price from Yahoo Finance."""
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period="5d")
+        
+        if len(hist) < 2:
+            return {"error": f"Not enough history for {ticker}"}
+        
+        yesterday_close = float(hist['Close'].iloc[-1])
+        previous_close = float(hist['Close'].iloc[-2])
+        yesterday_date = hist.index[-1].strftime("%B %d, %Y")
+        previous_date = hist.index[-2].strftime("%B %d, %Y")
+        change_percent = ((yesterday_close - previous_close) / previous_close) * 100
+        
+        return {
+            "yesterday_close": round(yesterday_close, 2),
+            "yesterday_date": yesterday_date,
+            "previous_close": round(previous_close, 2),
+            "previous_date": previous_date,
+            "change_percent": round(change_percent, 2),
+            "error": None
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
-        try:
-            time.sleep(random.uniform(6, 12))
-            resp = session.get(
-                fetch_url,
-                headers={"Accept": "text/html,application/xhtml+xml"},
-                timeout=30,
-            )
-            log.info(f"    HTML article: HTTP {resp.status_code}")
 
-            if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "lxml")
+# ============================================================================
+# ASX SCRAPER FUNCTIONS
+# ============================================================================
 
-                body = None
-                for selector in [
-                    {"data-test-id": "article-body"},
-                    {"class_": "paywall-full-content"},
-                    {"id": "a-body"},
-                    {"class_": "article-body"},
-                ]:
-                    body = soup.find("div", selector)
-                    if body:
+def asx_get_announcements(ticker: str) -> list:
+    """Get announcement list from ASX."""
+    url = f"{ASX_BASE_URL}/asx/v2/statistics/announcements.do?by=asxCode&asxCode={ticker}&timeframe=D&period=M6"
+    
+    try:
+        r = requests.get(url, headers=ASX_HEADERS, timeout=30)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        table = soup.find('table')
+        
+        if not table:
+            return []
+        
+        anns = []
+        for row in table.find_all('tr'):
+            cells = row.find_all('td')
+            if len(cells) < 3:
+                continue
+            
+            link = cells[2].find('a', href=True)
+            if not link:
+                continue
+            
+            href = link['href']
+            pdf_url = f"{ASX_BASE_URL}{href}" if href.startswith('/') else f"{ASX_BASE_URL}/asx/v2/statistics/{href}"
+            
+            text = link.get_text(strip=True)
+            m = re.match(r'^(.+?)\s*\d+\s*pages?', text, re.I)
+            
+            anns.append({
+                'title': m.group(1).strip() if m else text,
+                'date': cells[0].get_text(strip=True),
+                'pdf_url': pdf_url,
+                'sensitive': bool(cells[1].find('img'))
+            })
+        
+        return anns
+    except Exception as e:
+        print(f"      Error fetching announcements: {e}")
+        return []
+
+
+def asx_download_pdf(pdf_url: str) -> bytes:
+    """Download PDF by clicking Accept button using Playwright."""
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context()
+            page = context.new_page()
+            
+            page.goto(pdf_url, wait_until='networkidle', timeout=20000)
+            
+            content = page.content()
+            
+            if 'commercial purpose' in content.lower():
+                buttons = page.query_selector_all('input[type="submit"]')
+                
+                accept_btn = None
+                for btn in buttons:
+                    value = btn.get_attribute('value') or ''
+                    if 'agree' in value.lower() or 'confirm' in value.lower() or 'accept' in value.lower():
+                        accept_btn = btn
                         break
-
-                if body:
-                    text = body.get_text(separator="\n", strip=True)
+                
+                checkbox = page.query_selector('input[type="checkbox"]')
+                if checkbox:
+                    checkbox.click()
+                    page.wait_for_timeout(500)
+                
+                if accept_btn:
+                    accept_btn.click()
                 else:
-                    paragraphs = [
-                        p.get_text(strip=True)
-                        for p in soup.find_all("p")
-                        if len(p.get_text(strip=True)) > 40
-                    ]
-                    text = "\n".join(paragraphs)
-
-                if len(text) > 500:
-                    log.info(f"    Got {len(text)} chars via HTML page")
-                    return text
-
-                # Try __NEXT_DATA__ embedded in the article page
-                match = re.search(
-                    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
-                    resp.text,
-                    re.DOTALL,
-                )
-                if match:
                     try:
-                        nd = json.loads(match.group(1))
-                        props = nd.get("props", {}).get("pageProps", {})
-                        article = props.get("article", {}) or props.get("data", {})
-                        body_html = (
-                            article.get("attributes", {}).get("content", "")
-                            or article.get("body", "")
-                        )
-                        if body_html:
-                            soup2 = BeautifulSoup(body_html, "lxml")
-                            text = soup2.get_text(separator="\n", strip=True)
-                            if len(text) > 500:
-                                log.info(f"    Got {len(text)} chars via __NEXT_DATA__")
-                                return text
-                    except (json.JSONDecodeError, AttributeError):
+                        page.click('text=Agree')
+                    except:
                         pass
-        except Exception as e:
-            log.warning(f"    HTML fetch error: {e}")
+                
+                page.wait_for_timeout(3000)
+                page.wait_for_load_state('networkidle')
+                
+                resp = context.request.get(pdf_url)
+                body = resp.body()
+                
+                if body[:5] == b'%PDF-':
+                    browser.close()
+                    return body
+            
+            browser.close()
+            return None
+    except Exception as e:
+        print(f"      Error downloading PDF: {e}")
+        return None
 
-    log.warning(f"    No content retrieved for: {title}")
+
+def asx_extract_text(pdf_bytes: bytes) -> str:
+    """Extract text from PDF bytes."""
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as f:
+            f.write(pdf_bytes)
+            path = f.name
+        
+        text = ""
+        with pdfplumber.open(path) as pdf:
+            for pg in pdf.pages[:15]:
+                t = pg.extract_text()
+                if t:
+                    text += t + "\n"
+        
+        os.unlink(path)
+        return text[:12000] if text else ""
+    except Exception as e:
+        print(f"      Error extracting text: {e}")
+        return ""
+
+
+def asx_is_periodic_earnings_report(title: str) -> bool:
+    """Check if announcement is a quarterly, half-yearly or annual earnings report."""
+    title_lower = title.lower()
+    
+    periodic_patterns = [
+        r'(full year|fy\d{2}|annual).*(result|report)',
+        r'(half year|1h\d{2}|2h\d{2}|interim).*(result|report)',
+        r'(quarter|q[1-4]|[1-4]q).*(result|report)',
+        r'(result|report).*(full year|fy\d{2}|annual)',
+        r'(result|report).*(half year|1h|2h|interim)',
+        r'(result|report).*(quarter|q[1-4])',
+        r'appendix 4[de]',
+        r'preliminary final report',
+        r'\d{4}\s+(full year|annual)\s+result',
+        r'(1h|2h|hy)\d{2}\s+result',
+        r'profit announcement',
+    ]
+    
+    exclude_patterns = [
+        'trading update', 'guidance', 'presentation', 'investor',
+        'agm', 'annual general meeting', 'dividend', 'buyback',
+        'acquisition', 'merger', 'takeover', 'proposal', 'bid',
+        'offer', 'chair address', 'ceo address',
+    ]
+    
+    for exclude in exclude_patterns:
+        if exclude in title_lower:
+            return False
+    
+    for pattern in periodic_patterns:
+        if re.search(pattern, title_lower):
+            return True
+    
+    return False
+
+
+# ============================================================================
+# CLAUDE API FUNCTIONS
+# ============================================================================
+
+def get_anthropic_client() -> anthropic.Anthropic:
+    """Get Anthropic client."""
+    return anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
+
+
+def call_claude_with_search(client: anthropic.Anthropic, prompt: str, max_searches: int = 2) -> str:
+    """Call Claude API with web search tool enabled."""
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            tools=[{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": max_searches
+            }],
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        result = ""
+        for block in response.content:
+            if hasattr(block, 'text') and block.text is not None:
+                result += block.text
+        
+        return result.strip() if result else "NO_RESPONSE"
+    except Exception as e:
+        return f"ERROR: {str(e)}"
+
+
+def call_claude_analyze(client: anthropic.Anthropic, prompt: str) -> str:
+    """Call Claude API for analysis (no web search)."""
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text.strip()
+    except Exception as e:
+        return f"ERROR: {str(e)}"
+
+
+# ============================================================================
+# ASX-BASED RESEARCH FUNCTIONS (replaces web search for announcements/earnings)
+# ============================================================================
+
+def parse_asx_date(date_str: str) -> datetime:
+    """Parse ASX date string which may include time. Returns datetime or None."""
+    if not date_str:
+        return None
+    
+    # Clean up the date string - remove time portion if present
+    # ASX dates can be "26/08/2025" or "26/08/20257:38 am" or "29/01/2026 8:12 am"
+    date_str = date_str.strip()
+    
+    # Try to extract just the date part (DD/MM/YYYY)
+    date_match = re.match(r'(\d{1,2}/\d{1,2}/\d{4})', date_str)
+    if date_match:
+        date_part = date_match.group(1)
+        try:
+            return datetime.strptime(date_part, "%d/%m/%Y")
+        except ValueError:
+            pass
+    
+    # Try other formats
+    for fmt in ["%d/%m/%Y", "%d %b %Y", "%Y-%m-%d", "%d/%m/%Y %H:%M %p", "%d/%m/%Y%H:%M %p"]:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+    
     return None
 
 
-# ---------------------------------------------------------------------------
-# MAIN SCRAPING LOOP
-# ---------------------------------------------------------------------------
-
-def scrape_all_transcripts():
-    """Scrape transcripts for all configured tickers."""
-    session = build_session()
-    all_transcripts = []
-
-    for ticker in TICKERS:
-        info = TICKER_INFO.get(ticker, {"name": ticker, "sa_slug": ticker.lower()})
-        print(f"\n--- {ticker} ({info['name']}) ---")
-
-        links = get_transcript_links(session, ticker)
-
-        if not links:
-            log.warning(f"    No transcripts found for {ticker}")
-            continue
-
-        latest = links[0]
-        log.info(f"    Latest: {latest['title']}")
-
-        content = get_transcript_content(session, latest)
-
-        if content:
-            all_transcripts.append({
-                "ticker": ticker,
-                "company": info["name"],
-                "title": latest["title"],
-                "url": latest.get("url", ""),
-                "date": latest.get("date", ""),
-                "content": content,
-                "content_length": len(content),
-            })
-            log.info(f"    OK {ticker}: {len(content)} chars")
-        else:
-            log.warning(f"    FAIL {ticker}: no content")
-
-        time.sleep(random.uniform(5, 10))
-
-    return all_transcripts
+def format_asx_date(date_str: str) -> str:
+    """Format ASX date string to clean format without time."""
+    parsed = parse_asx_date(date_str)
+    if parsed:
+        return parsed.strftime("%d %b %Y")  # e.g., "26 Aug 2025"
+    return date_str  # Return original if parsing fails
 
 
-# ---------------------------------------------------------------------------
-# CLAUDE ANALYSIS
-# ---------------------------------------------------------------------------
+def research_new_information(client: anthropic.Anthropic, stock: dict) -> dict:
+    """
+    Research NEW information about the company in the last 7 days.
+    MUST capture ALL ASX announcements from last 7 days - no filtering.
+    Returns structured data for the "New Information" section.
+    """
+    asx_code = stock['asx_code']
+    today = datetime.now()
+    seven_days_ago = today - timedelta(days=7)
+    
+    result = {
+        "has_new_info": False,
+        "items": [],  # List of new information items
+        "no_news_message": "No new information in the last 7 days."
+    }
+    
+    # Step 1: Get ALL ASX announcements from last 7 days - NO FILTERING
+    anns = asx_get_announcements(asx_code)
+    recent_anns = []
+    
+    for ann in anns:
+        ann_date = parse_asx_date(ann['date'])
+        if ann_date and ann_date >= seven_days_ago:
+            recent_anns.append(ann)
+        elif not ann_date:
+            # If date parsing fails but it's in the first few announcements, include it
+            if len(recent_anns) < 5 and anns.index(ann) < 5:
+                recent_anns.append(ann)
+    
+    # Add ALL recent ASX announcements to result (prioritize price-sensitive)
+    # Sort: price-sensitive first, then by date
+    recent_anns.sort(key=lambda x: (not x.get('sensitive', False), x.get('date', '')))
+    
+    for ann in recent_anns[:5]:  # Max 5 recent announcements
+        # Mark price-sensitive announcements
+        ann_type = "ASX Announcement (Price Sensitive)" if ann.get('sensitive') else "ASX Announcement"
+        
+        result["items"].append({
+            "type": ann_type,
+            "title": ann['title'],
+            "date": format_asx_date(ann['date']),
+            "summary": None,
+            "source_url": ann['pdf_url'],
+            "is_new": True,
+            "price_sensitive": ann.get('sensitive', False)
+        })
+        result["has_new_info"] = True
+    
+    # Step 2: Search for recent news from reputable sources (skip if we have plenty of ASX news)
+    if len(result["items"]) < 3:
+        news_prompt = f"""Search for news about {stock['name']} (ASX: {stock['asx_code']}) published in the LAST 7 DAYS ONLY.
 
-CLAUDE_PROMPT = """You are an expert insurance industry analyst. Analyse this earnings call transcript
-for read-throughs relevant to AUB Group (ASX: AUB), Australia's largest insurance broker network.
+**ONLY include news from these sources:**
+- Australian Financial Review (AFR)
+- Sydney Morning Herald (SMH)
+- The Australian
+- Bloomberg
+- Reuters
 
-AUB CONTEXT:
-- Property insurance: ~45-50% of GWP (Business Packages, ISR, Strata, Farm)
-- Casualty insurance: ~27% of GWP (Liability, Workers' Comp, Motor, PI)
-- Panel composition: CGU/IAG 43%, Lloyd's 16%, Allianz 12%, QBE 8%
-- Key themes: broker consolidation, premium rate cycle, claims inflation, APAC expansion
+**STRICT RULES:**
+- ONLY include articles published within the last 7 days
+- If you cannot verify the publication date is within 7 days, DO NOT include it
+- Focus on material news: earnings updates, contracts, acquisitions, management changes, guidance
+- Ignore opinion pieces, analyst commentary, or general market news
 
-TRANSCRIPT:
-{transcript}
+After searching, provide JSON only:
+{{
+    "news_items": [
+        {{
+            "title": "Headline of the article",
+            "source_name": "Publication name",
+            "source_url": "URL or null",
+            "publication_date": "Date (must be within last 7 days)",
+            "summary": "1 sentence summary of what's new"
+        }}
+    ],
+    "no_recent_news": true/false
+}}
 
-Provide your analysis in this format:
+If no news from the last 7 days is found, return: {{"news_items": [], "no_recent_news": true}}
+"""
+        
+        search_result = call_claude_with_search(client, news_prompt, max_searches=1)
+        
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', search_result)
+            if json_match:
+                news_data = json.loads(json_match.group())
+                for item in news_data.get('news_items', []):
+                    result["items"].append({
+                        "type": "News",
+                        "title": item.get('title'),
+                        "date": item.get('publication_date'),
+                        "summary": item.get('summary'),
+                        "source_name": item.get('source_name'),
+                        "source_url": item.get('source_url'),
+                        "is_new": True,
+                        "price_sensitive": False
+                    })
+                    result["has_new_info"] = True
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    
+    return result
 
-HEADLINE: [One sentence - the single most important read-through for AUB]
 
-Positive signals (2-4 bullets)
-Negative signals (2-4 bullets)
+def research_announcements_asx(client: anthropic.Anthropic, stock: dict) -> dict:
+    """
+    Research announcements using ASX scraper.
+    Returns structured data compatible with V5 format.
+    """
+    asx_code = stock['asx_code']
+    
+    anns = asx_get_announcements(asx_code)
+    if not anns:
+        return {
+            "last_announcement": {
+                "date": "Not found",
+                "title": "Not found",
+                "summary": "Unable to retrieve announcement data from ASX",
+                "source_url": stock.get('asx_url')
+            },
+            "price_sensitive_news": {
+                "found": False,
+                "description": "No announcements found",
+                "source_url": None
+            }
+        }
+    
+    # Get price-sensitive announcements
+    sensitive = [a for a in anns if a['sensitive']]
+    
+    result = {
+        "last_announcement": {
+            "date": "Not found",
+            "title": "Not found",
+            "summary": "No recent announcements",
+            "source_url": stock.get('asx_url')
+        },
+        "price_sensitive_news": {
+            "found": False,
+            "description": "No material announcements in the past 3 days",
+            "source_url": None
+        }
+    }
+    
+    # Process the latest price-sensitive announcement
+    if sensitive:
+        latest = sensitive[0]
+        print(f"      Downloading: {latest['title'][:40]}...")
+        
+        pdf_bytes = asx_download_pdf(latest['pdf_url'])
+        if pdf_bytes:
+            text = asx_extract_text(pdf_bytes)
+            if text:
+                # Use Claude to summarize the announcement
+                prompt = f"""Analyze this ASX announcement and provide a 2-3 sentence summary focusing on what happened and why it matters to investors.
 
-SPECIFIC DATA: [Extract any specific numbers on: premium rates by line, organic growth
-(especially APAC/international), M&A activity/multiples paid, margins, loss ratios]
+Title: {latest['title']}
+Date: {latest['date']}
 
-BOTTOM LINE: [2-3 sentences on what this means for AUB specifically]
+Content:
+{text[:8000]}
 
-Keep it under 400 words. Be specific, not generic."""
+Provide ONLY the summary, no bullet points or formatting."""
+
+                summary = call_claude_analyze(client, prompt)
+                
+                result["last_announcement"] = {
+                    "date": latest['date'],
+                    "title": latest['title'],
+                    "summary": summary if not summary.startswith("ERROR") else "Summary unavailable",
+                    "source_url": latest['pdf_url']
+                }
+                
+                result["price_sensitive_news"] = {
+                    "found": True,
+                    "description": summary if not summary.startswith("ERROR") else latest['title'],
+                    "source_url": latest['pdf_url']
+                }
+    
+    return result
 
 
-def analyse_with_claude(transcript_text):
-    """Send transcript to Claude for AUB-focused analysis."""
-    if not ANTHROPIC_API_KEY:
-        return keyword_fallback(transcript_text)
+def research_market_update(client: anthropic.Anthropic, stock: dict) -> dict:
+    """
+    Research the LAST MARKET UPDATE - the most recent price-sensitive ASX announcement
+    containing fundamental information that impacts the stock price.
+    
+    This includes: quarterly updates, guidance changes, trading updates, annual/half-year results,
+    capital raises, acquisitions, or any other price-sensitive material.
+    """
+    asx_code = stock['asx_code']
+    
+    # Check cache first (cache for 7 days since market updates are more frequent)
+    cached = load_from_cache(asx_code, 'market_update', 7)
+    if cached:
+        return cached
+    
+    anns = asx_get_announcements(asx_code)
+    if not anns:
+        return {
+            "update_type": "Not found",
+            "update_date": "Not found",
+            "title": "Not found",
+            "key_financials": "Not found",
+            "guidance": "None mentioned",
+            "source_url": stock.get('asx_url')
+        }
+    
+    # Get the most recent PRICE-SENSITIVE announcement (ASX marks these clearly)
+    sensitive = [a for a in anns if a.get('sensitive')]
+    
+    if not sensitive:
+        return {
+            "update_type": "Not found",
+            "update_date": "Not found",
+            "title": "No recent price-sensitive announcements",
+            "key_financials": "Not found",
+            "guidance": "None mentioned",
+            "source_url": stock.get('asx_url')
+        }
+    
+    # Use the MOST RECENT price-sensitive announcement
+    latest = sensitive[0]
+    print(f"      Downloading: {latest['title'][:50]}...")
+    
+    pdf_bytes = asx_download_pdf(latest['pdf_url'])
+    if not pdf_bytes:
+        return {
+            "update_type": "Announcement",
+            "update_date": format_asx_date(latest['date']),
+            "title": latest['title'],
+            "key_financials": "Unable to download PDF",
+            "guidance": "None mentioned",
+            "source_url": latest['pdf_url']
+        }
+    
+    text = asx_extract_text(pdf_bytes)
+    if not text:
+        return {
+            "update_type": "Announcement",
+            "update_date": format_asx_date(latest['date']),
+            "title": latest['title'],
+            "key_financials": "Unable to extract text from PDF",
+            "guidance": "None mentioned",
+            "source_url": latest['pdf_url']
+        }
+    
+    # Use Claude to extract key information from any type of market update
+    prompt = f"""Analyze this ASX price-sensitive announcement and extract the key information that would impact the stock price.
 
+Title: {latest['title']}
+Date: {latest['date']}
+
+Content:
+{text[:10000]}
+
+This could be ANY type of market update: quarterly results, half-year/annual results, trading update, guidance change, capital raising, acquisition, or other material announcement.
+
+Provide your response in EXACTLY this JSON format (no other text):
+{{
+    "update_type": "Type of update (e.g., 'Annual Results FY25', 'Quarterly Update Q2 FY26', 'Trading Update', 'Capital Raising', 'Guidance Upgrade', 'Acquisition Announcement', etc.)",
+    "key_financials": "The MOST IMPORTANT financial metrics or numbers from this announcement. For results: include Revenue, NPAT, EPS, Dividend if available. For trading updates: include any metrics mentioned. For capital raises: include size and terms. For guidance: include the specific numbers. Format as a concise string with key metrics separated by ' | '. Example: 'NPAT: $180M (+31%) | EPS: 171.75c | Dividend: 66c fully franked'. If no financials, describe the key material information.",
+    "guidance": "Any forward-looking guidance, outlook, or forecasts mentioned. Include specific numbers if provided. If none, return 'None mentioned'."
+}}
+
+**RULES:**
+- Extract the ACTUAL numbers from the document
+- Focus on the most material information that would move the stock price
+- Be specific with numbers - include percentages, currency amounts, comparisons to prior periods
+- If this is a capital raising, include the size, price, and discount
+- If this is an acquisition, include the target and price"""
+
+    response = call_claude_analyze(client, prompt)
+    
     try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 1000,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": CLAUDE_PROMPT.format(
-                            transcript=transcript_text[:80000]
-                        ),
-                    }
-                ],
-            },
-            timeout=120,
-        )
-
-        if resp.status_code == 200:
-            data = resp.json()
-            parts = [
-                b["text"] for b in data.get("content", []) if b.get("type") == "text"
-            ]
-            return "\n".join(parts)
-        else:
-            log.warning(f"  Claude API: HTTP {resp.status_code} — {resp.text[:200]}")
-            return keyword_fallback(transcript_text)
-    except Exception as e:
-        log.warning(f"  Claude API error: {e}")
-        return keyword_fallback(transcript_text)
-
-
-def keyword_fallback(text):
-    """Simple keyword extraction when Claude is unavailable."""
-    keywords = {
-        "property": ["property", "property insurance", "ISR", "strata"],
-        "casualty": ["casualty", "liability", "workers comp", "motor"],
-        "rates": ["rate increase", "premium rate", "rate hardening", "pricing"],
-        "M&A": ["acquisition", "acquire", "merger", "bolt-on", "multiple"],
-        "APAC": ["asia", "pacific", "australia", "apac", "international"],
-        "margins": ["margin", "operating ratio", "expense ratio", "combined ratio"],
+        json_match = re.search(r'\{[\s\S]*\}', response)
+        if json_match:
+            update_data = json.loads(json_match.group())
+            result = {
+                "update_type": update_data.get('update_type', 'Announcement'),
+                "update_date": format_asx_date(latest['date']),
+                "title": latest['title'],
+                "key_financials": update_data.get('key_financials', 'Not found'),
+                "guidance": update_data.get('guidance', 'None mentioned'),
+                "source_url": latest['pdf_url']
+            }
+            
+            # Cache successful results
+            if result.get('key_financials') != 'Not found':
+                save_to_cache(asx_code, 'market_update', result)
+            
+            return result
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    
+    return {
+        "update_type": "Announcement",
+        "update_date": format_asx_date(latest['date']),
+        "title": latest['title'],
+        "key_financials": "Unable to extract - see source",
+        "guidance": "None mentioned",
+        "source_url": latest['pdf_url']
     }
 
-    text_lower = text.lower()
-    lines = []
-    for category, terms in keywords.items():
-        found = [t for t in terms if t.lower() in text_lower]
-        if found:
-            lines.append(f"**{category}**: mentions of {', '.join(found)}")
 
-    if lines:
-        return "KEYWORD ANALYSIS (Claude unavailable):\n" + "\n".join(lines)
-    return "No relevant keywords found (Claude unavailable)."
+# Keep the old function name as alias for backwards compatibility during transition
+def research_earnings_asx(client: anthropic.Anthropic, stock: dict) -> dict:
+    """Deprecated - use research_market_update instead."""
+    return research_market_update(client, stock)
 
 
-# ---------------------------------------------------------------------------
-# EMAIL
-# ---------------------------------------------------------------------------
+# ============================================================================
+# CLAUDE WEB SEARCH RESEARCH FUNCTIONS (for industry and competitors)
+# ============================================================================
 
-def send_email(transcripts, analyses):
-    """Send results via Gmail."""
-    if not SMTP_USER or not SMTP_PASSWORD:
-        log.warning("No SMTP credentials — skipping email")
-        return
+def research_industry(client: anthropic.Anthropic, stock: dict) -> dict:
+    """Research industry dynamics focused on REVENUE DRIVERS. Max 2 months old, flag items from last 7 days as NEW."""
+    industry_pubs = ", ".join(stock.get('industry_publications', []))
+    
+    # Get revenue driver information
+    revenue_drivers = stock.get('revenue_drivers', {})
+    primary_driver = revenue_drivers.get('primary', 'general business performance')
+    key_metrics = revenue_drivers.get('key_metrics', [])
+    search_terms = revenue_drivers.get('search_terms', [f"{stock['industry']} Australia"])
+    what_to_track = revenue_drivers.get('what_to_track', '')
+    commodities = revenue_drivers.get('commodities', [])
+    
+    # Build commodity section if applicable
+    commodity_section = ""
+    if commodities:
+        commodity_section = f"""
+**COMMODITY PRICES TO FIND (CRITICAL):**
+{chr(10).join(f'- {c}' for c in commodities)}
+You MUST search for current prices of these commodities and include them in your response.
+"""
+    
+    prompt = f"""You are researching factors that drive REVENUE and EARNINGS for {stock['name']} (ASX: {stock['asx_code']}).
 
-    today = datetime.now().strftime("%d %b %Y")
-    ticker_str = ", ".join(TICKERS)
+**PRIMARY REVENUE DRIVER:** {primary_driver}
 
-    subject = f"AUB Peer Monitor — {ticker_str} — {today}"
+**KEY METRICS TO FIND:**
+{chr(10).join(f'- {m}' for m in key_metrics)}
+{commodity_section}
+**CONTEXT:** {what_to_track}
 
-    html_parts = [
-        '<div style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; max-width: 700px; margin: 0 auto;">',
-        f'<div style="background: #1a365d; color: white; padding: 20px; border-radius: 8px 8px 0 0;">',
-        f'<h2 style="margin: 0;">AUB Peer Earnings Monitor</h2>',
-        f'<p style="margin: 5px 0 0; opacity: 0.8;">{today} | {len(transcripts)} transcript(s)</p>',
-        "</div>",
+**SEARCH STRATEGY:**
+Search for: {', '.join(f'"{t}"' for t in search_terms[:2])}
+
+**STRICT DATE REQUIREMENTS:**
+- ONLY include information published within the LAST 2 MONTHS (60 days)
+- Mark items published in the LAST 7 DAYS with "is_new": true
+
+**SOURCE HIERARCHY:**
+1. Industry-specific trade publications: {industry_pubs}
+2. Tier-one financial news: AFR, Bloomberg, Reuters, WSJ
+3. Company announcements and data providers
+
+**EXCLUDED:** IBISWorld, Mordor Intelligence, generic market research reports
+
+After searching, provide JSON only (no other text):
+{{
+    "data_points": [
+        {{
+            "fact": "Specific data point with NUMBERS - e.g. prices, rates, percentages, volumes",
+            "source_name": "Publication name",
+            "source_url": "URL or null",
+            "publication_date": "REQUIRED - exact date (e.g., 'January 15, 2026')",
+            "is_new": true/false,
+            "relevance": "How this specifically impacts {stock['name']}'s revenue or earnings"
+        }}
     ]
+}}
 
-    if not transcripts:
-        html_parts.append(
-            '<div style="padding: 20px; background: #fff3cd; border: 1px solid #ffc107; margin: 10px 0; border-radius: 4px;">'
-            f"<p>No new transcripts found in the last {LOOKBACK_DAYS} days for: {ticker_str}</p>"
-            "</div>"
-        )
-    else:
-        for i, t in enumerate(transcripts):
-            analysis = analyses[i] if i < len(analyses) else "Analysis unavailable"
-            html_parts.append(
-                f'<div style="border: 1px solid #e2e8f0; border-radius: 8px; margin: 15px 0; overflow: hidden;">'
-                f'<div style="background: #f7fafc; padding: 12px 16px; border-bottom: 1px solid #e2e8f0;">'
-                f'<strong>{t["ticker"]}</strong> — {t["company"]}<br>'
-                f'<a href="{t["url"]}" style="color: #2b6cb0;">{t["title"]}</a>'
-                f'<br><span style="color: #718096; font-size: 12px;">{t.get("date", "")} | {t["content_length"]:,} chars</span>'
-                f"</div>"
-                f'<div style="padding: 16px; font-size: 14px; line-height: 1.6; white-space: pre-wrap;">{analysis}</div>'
-                f"</div>"
-            )
-
-    html_parts.append("</div>")
-    html_body = "\n".join(html_parts)
-
-    plain_parts = [f"AUB Peer Earnings Monitor — {today}\n{'=' * 50}\n"]
-    if not transcripts:
-        plain_parts.append(f"No new transcripts found (last {LOOKBACK_DAYS} days)\n")
-    else:
-        for i, t in enumerate(transcripts):
-            analysis = analyses[i] if i < len(analyses) else "Analysis unavailable"
-            plain_parts.append(
-                f"\n--- {t['ticker']} ({t['company']}) ---\n"
-                f"{t['title']}\n{t['url']}\n\n"
-                f"{analysis}\n"
-            )
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = SMTP_USER
-    msg["To"] = EMAIL_TO
-    msg.attach(MIMEText("\n".join(plain_parts), "plain"))
-    msg.attach(MIMEText(html_body, "html"))
-
+**CRITICAL RULES:**
+- Focus on data that DIRECTLY impacts {stock['name']}'s revenue: {primary_driver}
+- Include SPECIFIC NUMBERS (prices, rates, percentages, volumes)
+- Every fact must explain its impact on earnings/revenue in the relevance field
+- If searching for commodity prices, include the current price with date
+- Return empty array if no relevant data within 2 months
+"""
+    
+    result = call_claude_with_search(client, prompt, max_searches=2)
+    
     try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_USER, EMAIL_TO, msg.as_string())
-        log.info(f"Email sent to {EMAIL_TO}")
+        json_match = re.search(r'\{[\s\S]*\}', result)
+        if json_match:
+            data = json.loads(json_match.group())
+            
+            # POST-PROCESS: Filter out items older than 2 months
+            if 'data_points' in data:
+                filtered_points = []
+                two_months_ago = datetime.now() - timedelta(days=60)
+                
+                for point in data['data_points']:
+                    if point is None:
+                        continue
+                    pub_date_str = point.get('publication_date') or ''
+                    
+                    # Skip if no date provided
+                    if not pub_date_str:
+                        continue
+                    
+                    # Try to parse the date and validate it's within 2 months
+                    is_valid = False
+                    for fmt in ["%B %d, %Y", "%d %B %Y", "%B %Y", "%d/%m/%Y", "%Y-%m-%d", 
+                                "%b %d, %Y", "%d %b %Y", "%b %Y"]:
+                        try:
+                            pub_date = datetime.strptime(pub_date_str, fmt)
+                            if pub_date >= two_months_ago:
+                                is_valid = True
+                                # Also check if it's within last 7 days for [NEW] tag
+                                seven_days_ago = datetime.now() - timedelta(days=7)
+                                point['is_new'] = pub_date >= seven_days_ago
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    # If we couldn't parse the date, check for year indicators
+                    if not is_valid and pub_date_str:
+                        # Reject if contains old years
+                        if any(yr in pub_date_str for yr in ['2024', '2023', '2022', '2021', '2020']):
+                            continue
+                        # Accept if contains recent months
+                        if '2026' in pub_date_str or '2025' in pub_date_str:
+                            # Check for months that are definitely > 2 months old
+                            if any(m in pub_date_str.lower() for m in ['january 2025', 'february 2025', 'march 2025', 
+                                                                         'april 2025', 'may 2025', 'june 2025',
+                                                                         'july 2025', 'august 2025', 'september 2025',
+                                                                         'october 2025', 'november 2025']):
+                                continue  # Skip old 2025 dates
+                            is_valid = True
+                    
+                    if is_valid:
+                        filtered_points.append(point)
+                
+                data['data_points'] = filtered_points
+            
+            return data
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    
+    return {
+        "data_points": []
+    }
+
+
+def research_competitors(client: anthropic.Anthropic, stock: dict) -> dict:
+    """
+    Research competitor news using Claude web search.
+    Max 2 months old, flag items from last 7 days as NEW.
+    Option C: Web search as primary, ASX scraper supplement for listed competitors.
+    """
+    competitors_str = ", ".join(stock['competitors'])
+    listed_comps = [c for c in stock['competitors'] if '.AX)' in c or 'ASX:' in c]
+    unlisted_comps = [c for c in stock['competitors'] if '.AX)' not in c and 'ASX:' not in c]
+    
+    prompt = f"""You are conducting competitive intelligence research for {stock['name']} (ASX: {stock['asx_code']}).
+
+**COMPETITORS TO MONITOR:**
+Listed: {', '.join(listed_comps) if listed_comps else 'None specified'}
+Unlisted: {', '.join(unlisted_comps) if unlisted_comps else 'None specified'}
+
+**STRICT DATE REQUIREMENTS:**
+- ONLY include news published within the LAST 2 MONTHS (60 days)
+- For each item, you MUST verify and include the publication date
+- If you cannot verify the date is within 2 months, DO NOT include it
+- Mark items published in the LAST 7 DAYS with "is_new": true
+
+**SOURCE HIERARCHY (prioritize in this order):**
+1. Company press releases and ASX announcements
+2. Industry-specific trade publications
+3. Tier-one financial news: Australian Financial Review (AFR), Wall Street Journal (WSJ), Sydney Morning Herald (SMH), The Australian, Bloomberg, Reuters
+
+**EXCLUDED SOURCES - DO NOT CITE:**
+- IBISWorld, Mordor Intelligence, or similar market research aggregators
+- Opinion pieces or general industry commentary (focus on competitor ACTIONS)
+- Any article older than 2 months
+
+**WHAT COUNTS AS COMPETITIVE NEWS:**
+- Product launches or service changes
+- Pricing changes
+- Partnerships or contracts announced
+- Executive appointments
+- Funding rounds or capital raises
+- Market entry/exit decisions
+- M&A activity
+- Operational changes or restructuring
+
+After searching, provide the following in JSON format only (no other text):
+{{
+    "competitor_news": [
+        {{
+            "competitor": "Company name",
+            "news": "Specific action, announcement, or development (not opinion/commentary)",
+            "publication_date": "REQUIRED - exact date from the article (e.g., 'January 15, 2026')",
+            "is_new": true/false,
+            "source_name": "Publication name",
+            "source_url": "Actual URL from search results, or null",
+            "implications": "What this might mean for {stock['name']}'s competitive position"
+        }}
+    ],
+    "no_recent_news": false,
+    "no_recent_news_note": null
+}}
+
+If NO competitive news was found within the 2-month window, return:
+{{
+    "competitor_news": [],
+    "no_recent_news": true,
+    "no_recent_news_note": "No material competitive announcements found within the last 2 months for monitored competitors."
+}}
+
+**CRITICAL RULES:**
+- EVERY item must have a verified publication_date within the last 2 months
+- Set "is_new": true if published within the last 7 days, otherwise false
+- Only include news you actually found with verifiable competitor ACTIONS
+- Do NOT include general market commentary or analyst opinions
+- Be specific about what competitors announced or did
+- If no recent news exists within 2 months, return empty competitor_news array
+"""
+    
+    result = call_claude_with_search(client, prompt, max_searches=2)
+    
+    competitor_data = None
+    try:
+        json_match = re.search(r'\{[\s\S]*\}', result)
+        if json_match:
+            competitor_data = json.loads(json_match.group())
+            
+            # POST-PROCESS: Filter out items older than 2 months
+            if 'competitor_news' in competitor_data:
+                filtered_news = []
+                two_months_ago = datetime.now() - timedelta(days=60)
+                
+                for item in competitor_data['competitor_news']:
+                    if item is None:
+                        continue
+                    pub_date_str = item.get('publication_date') or ''
+                    
+                    # Skip if no date provided
+                    if not pub_date_str:
+                        continue
+                    
+                    # Try to parse the date and validate it's within 2 months
+                    is_valid = False
+                    for fmt in ["%B %d, %Y", "%d %B %Y", "%B %Y", "%d/%m/%Y", "%Y-%m-%d", 
+                                "%b %d, %Y", "%d %b %Y", "%b %Y"]:
+                        try:
+                            pub_date = datetime.strptime(pub_date_str, fmt)
+                            if pub_date >= two_months_ago:
+                                is_valid = True
+                                # Also check if it's within last 7 days for [NEW] tag
+                                seven_days_ago = datetime.now() - timedelta(days=7)
+                                item['is_new'] = pub_date >= seven_days_ago
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    # If we couldn't parse the date, check for year indicators
+                    if not is_valid and pub_date_str:
+                        # Reject if contains old years
+                        if any(yr in pub_date_str for yr in ['2024', '2023', '2022', '2021', '2020']):
+                            continue
+                        # Accept if contains recent months
+                        if '2026' in pub_date_str or '2025' in pub_date_str:
+                            # Check for months that are definitely > 2 months old
+                            if any(m in pub_date_str.lower() for m in ['january 2025', 'february 2025', 'march 2025', 
+                                                                         'april 2025', 'may 2025', 'june 2025',
+                                                                         'july 2025', 'august 2025', 'september 2025',
+                                                                         'october 2025', 'november 2025']):
+                                continue  # Skip old 2025 dates
+                            is_valid = True
+                    
+                    if is_valid:
+                        filtered_news.append(item)
+                
+                competitor_data['competitor_news'] = filtered_news
+                
+                # Update no_recent_news flag if all items were filtered out
+                if not filtered_news:
+                    competitor_data['no_recent_news'] = True
+                    competitor_data['no_recent_news_note'] = "No material competitive announcements found within the last 2 months."
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    
+    if not competitor_data:
+        competitor_data = {
+            "competitor_news": [],
+            "no_recent_news": True,
+            "no_recent_news_note": "Unable to retrieve competitor data"
+        }
+    
+    # Option C: Supplement with ASX scraper for listed competitors
+    listed_competitor_codes = stock.get('listed_competitors', [])
+    if listed_competitor_codes:
+        asx_competitor_news = research_competitors_asx(client, listed_competitor_codes)
+        if asx_competitor_news:
+            # Add ASX-sourced news to the competitor_news list
+            competitor_data['competitor_news'].extend(asx_competitor_news)
+            if competitor_data.get('no_recent_news') and asx_competitor_news:
+                competitor_data['no_recent_news'] = False
+                competitor_data['no_recent_news_note'] = None
+    
+    return competitor_data
+
+
+def research_competitors_asx(client: anthropic.Anthropic, competitor_codes: list) -> list:
+    """
+    Get recent announcements from ASX-listed competitors.
+    Returns list of competitor news items.
+    """
+    competitor_news = []
+    
+    # Limit to top 2 competitors to manage time
+    for code in competitor_codes[:2]:
+        print(f"      Checking ASX competitor: {code}...")
+        
+        anns = asx_get_announcements(code)
+        if not anns:
+            continue
+        
+        # Get latest price-sensitive announcement
+        sensitive = [a for a in anns if a['sensitive']]
+        if not sensitive:
+            continue
+        
+        latest = sensitive[0]
+        
+        # Only include if within last 14 days (approximate check via date string)
+        # Note: Date parsing could be improved for exact validation
+        
+        competitor_news.append({
+            "competitor": f"{code} (ASX)",
+            "news": latest['title'],
+            "publication_date": latest['date'],
+            "source_name": "ASX Announcement",
+            "source_url": latest['pdf_url'],
+            "implications": "See ASX announcement for details"
+        })
+    
+    return competitor_news
+
+
+# ============================================================================
+# CACHING FUNCTIONS
+# ============================================================================
+
+def ensure_cache_dir():
+    """Create cache directory if it doesn't exist."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_cache_path(asx_code: str, cache_type: str) -> Path:
+    """Get the cache file path for a specific stock and data type."""
+    return CACHE_DIR / f"{asx_code.lower()}_{cache_type}.json"
+
+
+def load_from_cache(asx_code: str, cache_type: str, max_age_days: int) -> dict | None:
+    """Load data from cache if it exists and is not expired."""
+    cache_path = get_cache_path(asx_code, cache_type)
+    
+    if not cache_path.exists():
+        return None
+    
+    try:
+        with open(cache_path, 'r') as f:
+            cached = json.load(f)
+        
+        cached_date = datetime.fromisoformat(cached.get('_cached_at', '2000-01-01'))
+        age = datetime.now() - cached_date
+        
+        if age > timedelta(days=max_age_days):
+            print(f"(cache expired: {age.days} days old)")
+            return None
+        
+        print(f"(using cache from {age.days} days ago)")
+        return cached.get('data')
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        print(f"(cache read error: {e})")
+        return None
+
+
+def save_to_cache(asx_code: str, cache_type: str, data: dict):
+    """Save data to cache with timestamp."""
+    ensure_cache_dir()
+    cache_path = get_cache_path(asx_code, cache_type)
+    
+    cached = {
+        '_cached_at': datetime.now().isoformat(),
+        '_asx_code': asx_code,
+        'data': data
+    }
+    
+    try:
+        with open(cache_path, 'w') as f:
+            json.dump(cached, f, indent=2)
     except Exception as e:
-        log.error(f"Email failed: {e}")
+        print(f"(cache write error: {e})")
 
 
-# ---------------------------------------------------------------------------
+# ============================================================================
+# HTML FORMATTING
+# ============================================================================
+
+def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_update: dict, 
+                      industry: dict, competitors: dict, stock_num: int) -> str:
+    """Format all researched data into HTML."""
+    
+    price_data = price_data or {}
+    new_info = new_info or {}
+    market_update = market_update or {}
+    industry = industry or {}
+    competitors = competitors or {}
+    
+    # Price section
+    if price_data.get('error'):
+        price_html = f'<span style="color:#e74c3c;">Price data unavailable: {price_data.get("error", "Unknown error")}</span>'
+    else:
+        change_pct = price_data.get('change_percent', 0) or 0
+        change_color = "#27ae60" if change_pct >= 0 else "#e74c3c"
+        change_sign = "+" if change_pct >= 0 else ""
+        price_html = f"""<strong style="color:#2980b9;">YESTERDAY ({price_data.get('yesterday_date', 'N/A')}):</strong> A${price_data.get('yesterday_close', 0):.2f} | 
+<strong style="color:#2980b9;">PREVIOUS ({price_data.get('previous_date', 'N/A')}):</strong> A${price_data.get('previous_close', 0):.2f} | 
+<strong style="color:#2980b9;">CHANGE:</strong> <span style="color:{change_color};">{change_sign}{change_pct:.2f}%</span>"""
+    
+    # NEW INFORMATION section - ALL ASX announcements from last 7 days
+    if new_info.get('has_new_info') and new_info.get('items'):
+        new_info_items = []
+        for item in new_info['items']:
+            # Highlight price-sensitive announcements
+            if item.get('price_sensitive'):
+                item_html = f"<strong style=\"color:#e74c3c;\">⚡ {item.get('type', 'News')}:</strong> {item.get('title', 'Untitled')}"
+            else:
+                item_html = f"<strong>{item.get('type', 'News')}:</strong> {item.get('title', 'Untitled')}"
+            if item.get('date'):
+                item_html += f" ({item['date']})"
+            if item.get('source_url'):
+                item_html += f' <a href="{item["source_url"]}" style="color:#3498db;">[Source]</a>'
+            if item.get('summary'):
+                item_html += f"<br><em style=\"color:#7f8c8d;font-size:0.9em;\">{item['summary']}</em>"
+            new_info_items.append(f"<li>{item_html}</li>")
+        new_info_html = "\n".join(new_info_items)
+    else:
+        new_info_html = "<li><em>No new information in the last 7 days.</em></li>"
+    
+    # LAST MARKET UPDATE section (replaces old Earnings section)
+    update_url = market_update.get('source_url') or stock.get('asx_url', '#')
+    
+    if market_update.get('update_type') and market_update.get('update_type') != 'Not found':
+        market_update_html = f"""<strong>Type:</strong> {market_update.get('update_type')}<br>
+<strong>Date:</strong> {market_update.get('update_date', 'Not found')}<br>
+<strong>Key Financials:</strong> {market_update.get('key_financials', 'Not found')}<br>
+<strong>Guidance:</strong> {market_update.get('guidance', 'None mentioned')}"""
+    else:
+        market_update_html = "No recent price-sensitive market update found."
+    
+    # Industry dynamics - with [NEW] tag for items from last 7 days
+    ind_points = industry.get('data_points') or []
+    if ind_points:
+        ind_items = []
+        for point in ind_points:
+            if point is None:
+                continue
+            fact = point.get('fact') or ''
+            if not fact or fact == 'N/A':
+                continue
+            
+            # Add [NEW] tag if published in last 7 days
+            is_new = point.get('is_new', False)
+            new_tag = '<span style="color:#e74c3c;font-weight:bold;">[NEW]</span> ' if is_new else ''
+            
+            source_name = point.get('source_name') or point.get('source')
+            source_url = point.get('source_url')
+            pub_date = point.get('publication_date', '')
+            
+            item = f"{new_tag}{fact}"
+            if source_name and source_name != 'N/A':
+                if source_url:
+                    item += f' <a href="{source_url}" style="color:#3498db;">({source_name}'
+                    if pub_date and pub_date != 'Date not verified':
+                        item += f', {pub_date}'
+                    item += ')</a>'
+                else:
+                    item += f' ({source_name}'
+                    if pub_date and pub_date != 'Date not verified':
+                        item += f', {pub_date}'
+                    item += ')'
+            
+            relevance = point.get('relevance')
+            if relevance and relevance != 'N/A' and len(relevance) > 10:
+                item += f'<br><em style="color:#7f8c8d;font-size:0.9em;">→ {relevance}</em>'
+            
+            ind_items.append(f'<li>{item}</li>')
+        industry_html = "\n".join(ind_items) if ind_items else "<li>No key driver data found in the last 2 months.</li>"
+    else:
+        industry_html = "<li>No key driver data found in the last 2 months.</li>"
+    
+    # Competitor dynamics - with [NEW] tag for items from last 7 days
+    comp_news = competitors.get('competitor_news') or []
+    no_recent = competitors.get('no_recent_news', False)
+    
+    if no_recent or not comp_news:
+        note = competitors.get('no_recent_news_note') or 'No material competitive announcements found within the last 2 months.'
+        competitor_html = f"<li><em>{note}</em></li>"
+    else:
+        comp_items = []
+        for news_item in comp_news:
+            if news_item is None:
+                continue
+            competitor_name = news_item.get('competitor') or 'Unknown'
+            news_desc = news_item.get('news') or ''
+            if not news_desc:
+                continue
+            
+            # Add [NEW] tag if published in last 7 days
+            is_new = news_item.get('is_new', False)
+            new_tag = '<span style="color:#e74c3c;font-weight:bold;">[NEW]</span> ' if is_new else ''
+            
+            item = f"{new_tag}<strong>{competitor_name}:</strong> {news_desc}"
+            
+            source_name = news_item.get('source_name')
+            pub_date = news_item.get('publication_date') or news_item.get('date')
+            source_url = news_item.get('source_url')
+            
+            if source_name or pub_date:
+                item += ' ('
+                if pub_date:
+                    item += pub_date
+                if source_name and pub_date:
+                    item += ', '
+                if source_name:
+                    item += source_name
+                item += ')'
+            
+            if source_url:
+                item += f' <a href="{source_url}" style="color:#3498db;">[Source]</a>'
+            
+            implications = news_item.get('implications')
+            if implications and implications != "See ASX announcement for details":
+                item += f"<br><em style=\"color:#7f8c8d;font-size:0.9em;\">→ Implications: {implications}</em>"
+            
+            comp_items.append(f'<li>{item}</li>')
+        
+        competitor_html = "\n".join(comp_items) if comp_items else "<li>No competitor news from the last 2 months.</li>"
+    
+    # Assemble HTML
+    html = f"""
+<h2 style="color:#34495e;margin-top:30px;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
+{stock_num}. {stock['name']} ({stock['ticker']})
+</h2>
+
+<p style="margin:10px 0;line-height:1.6;">
+{price_html}
+</p>
+
+<p style="margin:15px 0;line-height:1.6;">
+<strong style="color:#2980b9;">NEW INFORMATION (Last 7 Days):</strong>
+</p>
+<ul style="margin:5px 0 15px 20px;line-height:1.8;">
+{new_info_html}
+</ul>
+
+<p style="margin:15px 0;line-height:1.6;">
+<strong style="color:#2980b9;">LAST MARKET UPDATE:</strong><br>
+{market_update_html}<br>
+<strong>Source:</strong> <a href="{update_url}" style="color:#3498db;">View Announcement</a>
+</p>
+
+<p style="margin:15px 0;line-height:1.6;">
+<strong style="color:#2980b9;">KEY DRIVERS (Last 2 Months):</strong>
+</p>
+<ul style="margin:5px 0 15px 20px;line-height:1.8;">
+{industry_html}
+</ul>
+
+<p style="margin:15px 0;line-height:1.6;">
+<strong style="color:#2980b9;">COMPETITIVE DYNAMICS (Last 2 Months):</strong>
+</p>
+<ul style="margin:5px 0 15px 20px;line-height:1.8;">
+{competitor_html}
+</ul>
+
+<hr style="border:none;border-top:1px solid #ecf0f1;margin:30px 0;">
+"""
+    return html
+
+
+def wrap_in_template(content: str, today: str) -> str:
+    """Wrap in email template."""
+    return f'''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+</head>
+<body style="font-family:Arial,sans-serif;margin:0;padding:0;background-color:#f4f4f4;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f4;">
+<tr><td align="center" style="padding:20px;">
+<table width="1000" cellpadding="20" cellspacing="0" style="background-color:#ffffff;border:1px solid #dddddd;">
+<tr><td>
+
+<h1 style="color:#2c3e50;border-bottom:3px solid #3498db;padding-bottom:10px;margin-top:0;">
+Berkholts Stock Summaries - {today}
+</h1>
+
+{content}
+
+<p style="color:#7f8c8d;font-size:12px;margin-top:30px;text-align:center;">
+Generated by Berkholts Stock Summary System V6<br>
+Prices: Yahoo Finance | Announcements & Earnings: ASX Direct | Industry & Competitors: Claude AI<br>
+Sources: ASX announcements, trade publications, AFR, WSJ, SMH, The Australian<br>
+</p>
+
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>'''
+
+
+# ============================================================================
+# EMAIL FUNCTIONS
+# ============================================================================
+
+def send_email(html: str, recipient: str, smtp_email: str, smtp_password: str, subject: str):
+    """Send email with detailed logging."""
+    msg = MIMEText(html, 'html', 'utf-8')
+    msg['Subject'] = subject
+    msg['From'] = smtp_email
+    msg['To'] = recipient
+    
+    msg['Reply-To'] = smtp_email
+    msg['X-Priority'] = '3'
+    
+    try:
+        print(f"      Connecting to smtp.gmail.com:465...")
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            print(f"      Connected. Logging in as {smtp_email}...")
+            server.login(smtp_email, smtp_password)
+            print(f"      Logged in. Sending to {recipient}...")
+            result = server.sendmail(smtp_email, recipient, msg.as_string())
+            if result:
+                print(f"      ⚠️ Partial failure: {result}")
+            else:
+                print(f"      ✅ SMTP accepted message for {recipient}")
+    except smtplib.SMTPRecipientsRefused as e:
+        print(f"      ❌ Recipient refused: {e.recipients}")
+        raise
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"      ❌ Authentication failed: {e}")
+        raise
+    except smtplib.SMTPException as e:
+        print(f"      ❌ SMTP error: {type(e).__name__}: {e}")
+        raise
+    except Exception as e:
+        print(f"      ❌ Unexpected error: {type(e).__name__}: {e}")
+        raise
+
+
+# ============================================================================
 # MAIN
-# ---------------------------------------------------------------------------
+# ============================================================================
 
 def main():
-    log.info("=" * 60)
-    log.info("AUB PEER EARNINGS MONITOR — Seeking Alpha (JSON API)")
-    log.info(f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    log.info("=" * 60)
-    log.info(f"Peers: {', '.join(TICKERS)}")
-    log.info(f"Email: {SMTP_USER} -> {EMAIL_TO}")
-    log.info(f"Claude API: {'yes' if ANTHROPIC_API_KEY else 'no'}")
-
-    cookie_count = sum(1 for v in SA_COOKIES.values() if v)
-    log.info(f"SA cookies: {cookie_count}/{len(SA_COOKIES)}")
-
-    transcripts = scrape_all_transcripts()
-
-    print(f"\nRESULTS: {len(transcripts)} transcripts")
-
-    analyses = []
-    for t in transcripts:
-        log.info(f"  Analysing {t['ticker']}...")
-        analysis = analyse_with_claude(t["content"])
-        analyses.append(analysis)
-
-    send_email(transcripts, analyses)
+    print("=" * 70)
+    print("🚀 Berkholts Stock Emailer - V6 (ASX Scraper Integration)")
+    print(f"⏰ Started: {datetime.now()}")
+    print("=" * 70)
+    
+    # Check env vars
+    anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+    smtp_email = os.getenv('SMTP_EMAIL')
+    smtp_password = os.getenv('SMTP_PASSWORD')
+    recipient_emails_str = os.getenv('RECIPIENT_EMAILS')
+    
+    missing = []
+    if not anthropic_key: missing.append('ANTHROPIC_API_KEY')
+    if not smtp_email: missing.append('SMTP_EMAIL')
+    if not smtp_password: missing.append('SMTP_PASSWORD')
+    if not recipient_emails_str: missing.append('RECIPIENT_EMAILS')
+    
+    if missing:
+        print(f"❌ Missing: {', '.join(missing)}")
+        sys.exit(1)
+    
+    recipients = [e.strip() for e in recipient_emails_str.split(',') if e.strip()]
+    
+    # Always include backup recipient
+    BACKUP_RECIPIENT = "lfbannon@gmail.com"
+    if BACKUP_RECIPIENT not in recipients:
+        recipients.append(BACKUP_RECIPIENT)
+        print(f"📧 Recipients: {', '.join(recipients[:-1])} + backup: {BACKUP_RECIPIENT}")
+    else:
+        print(f"📧 Recipients: {', '.join(recipients)}")
+    
+    # Initialize cache
+    ensure_cache_dir()
+    print(f"💾 Cache directory: {CACHE_DIR}")
+    print(f"   Earnings cache duration: {EARNINGS_CACHE_DAYS} days")
+    
+    client = get_anthropic_client()
+    today_str = datetime.now().strftime("%B %d, %Y")
+    
+    all_html = ""
+    
+    for i, stock in enumerate(STOCKS, 1):
+        print(f"\n{'=' * 70}")
+        print(f"📊 STOCK {i}/{len(STOCKS)}: {stock['name']}")
+        print("=" * 70)
+        
+        # Step 1: Get price (Yahoo Finance)
+        print("   💰 Getting price...", end=" ")
+        price = get_stock_price(stock['ticker'])
+        if price.get('error'):
+            print(f"⚠️ {price['error']}")
+        else:
+            print(f"✅ A${price['yesterday_close']:.2f} ({price['change_percent']:+.2f}%)")
+        
+        # Step 2: Research NEW INFORMATION (last 7 days - ALL ASX announcements)
+        print("   📰 Researching new information (last 7 days)...", end=" ")
+        new_info = research_new_information(client, stock)
+        new_info_count = len(new_info.get('items', []))
+        new_info_status = f"✅ ({new_info_count} items)" if new_info.get('has_new_info') else "⚠️ (none)"
+        print(new_info_status)
+        
+        # Step 3: Research LAST MARKET UPDATE (most recent price-sensitive announcement)
+        print("   💹 Researching last market update (ASX)...", end=" ")
+        market_update = research_market_update(client, stock)
+        update_status = "✅" if market_update.get('update_type') != 'Not found' else "⚠️"
+        print(update_status)
+        
+        # Step 4: Research KEY DRIVERS (Claude web search - last 2 months)
+        print("   🏭 Researching key drivers (last 2 months)...", end=" ")
+        industry = research_industry(client, stock)
+        ind_status = "✅" if len(industry.get('data_points', [])) > 0 else "⚠️"
+        print(ind_status)
+        
+        # Step 5: Research competitors (Claude + ASX supplement - last 2 months)
+        listed_comp_count = len(stock.get('listed_competitors', []))
+        print(f"   🏁 Researching competitors (last 2 months, +{listed_comp_count} ASX)...", end=" ")
+        competitors = research_competitors(client, stock)
+        comp_status = "✅" if len(competitors.get('competitor_news', [])) > 0 or competitors.get('no_recent_news') else "⚠️"
+        print(comp_status)
+        
+        # Step 6: Format HTML
+        print("   📝 Formatting HTML...", end=" ")
+        try:
+            stock_html = format_stock_html(stock, price, new_info, market_update, industry, competitors, i)
+            if stock_html is None:
+                stock_html = f"<h2>{stock['name']} - Error formatting data</h2><hr>"
+            print("✅")
+        except Exception as e:
+            print(f"❌ {e}")
+            stock_html = f"<h2>{stock['name']} - Error: {str(e)}</h2><hr>"
+        
+        all_html += stock_html
+    
+    # Final assembly
+    print(f"\n📧 Assembling email...")
+    final_html = wrap_in_template(all_html, today_str)
+    print(f"📄 Total: {len(final_html)} chars")
+    
+    # Send
+    subject = f"Berkholts Stock Summaries - {today_str}"
+    for recipient in recipients:
+        try:
+            print(f"📤 Sending to {recipient}...", end=" ")
+            send_email(final_html, recipient, smtp_email, smtp_password, subject)
+            print("✅")
+        except Exception as e:
+            print(f"❌ {e}")
+    
+    print(f"\n✅ DONE at {datetime.now()}")
 
 
 if __name__ == "__main__":
