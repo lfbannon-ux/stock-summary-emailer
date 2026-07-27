@@ -1059,17 +1059,21 @@ def build_digest_line(client: anthropic.Anthropic, stock: dict, price: dict,
 
     prompt = f"""You are a portfolio analyst deciding whether {stock['name']} (ASX: {stock['asx_code']}) deserves a spot in today's KEY UPDATES note, and if so writing its one line.
 
-ONLY consider developments from the LAST 7 DAYS:
-- Company's own announcements (last 7 days): {own or 'none'}
-- Key drivers flagged new this week: {drivers or 'none'}
-- Peer read-throughs flagged new this week (moves + transcript quotes): {peers or 'none'}
+Consider these RECENT developments (roughly the last two weeks):
+- Company's own announcements: {own or 'none'}
+- Key drivers / data points: {drivers or 'none'}
+- Peer read-throughs (price moves + transcript quotes): {peers or 'none'}
 Share price: {price_line}
 
-STEP 1 - MATERIALITY TEST. Mark it material ONLY if a last-7-days development answers YES to at least one:
+STEP 1 - MATERIALITY TEST. Mark it material if ANY item answers YES to at least one:
   (a) Could it impact the company's EARNINGS / revenue?
   (b) Does it affect its COMPETITIVE ADVANTAGE or position?
   (c) Does it reflect a genuine CHANGE in the business (strategy, capital, management, structure)?
-Routine administrative filings do NOT count on their own: Appendix 3B/3Y/3Z, change of director's interest, becoming/ceasing a substantial holder, dividend/distribution admin, notice of meeting, TMD updates, buy-back daily notices. A peer read-through counts ONLY if it genuinely informs THIS company's outlook.
+LEAN TOWARDS INCLUDING when there is real signal. In particular, these DO count as material:
+  - A peer's earnings result, trading update or guidance change that reads through to this company
+  - A meaningful commodity / rate / price move that affects this company's revenue
+  - A contract win/loss, M&A, capital or management change (this company or a peer)
+Only EXCLUDE when the sole items are routine administrative filings with no read-through (Appendix 3B/3Y/3Z, change of director's interest, becoming/ceasing a substantial holder, dividend/distribution admin, notice of meeting, TMD updates, buy-back daily notices), or when there is genuinely nothing recent at all.
 
 STEP 2 - If MATERIAL, write ONE concise, specific, ACTIONABLE line in this style (hard numbers + the read-through):
 "Q4 platform FUA A$135.8bn (+28% yoy), record inflows A$5.1bn; Netwealth call flagged incumbents still losing flow to specialists."
@@ -1165,30 +1169,41 @@ def to_ddmmyy(date_str: str) -> str:
     return s
 
 
-def _parse_within_days(date_str: str, days: int):
-    """Parse a date string and return it only if it falls within the last `days`
-    (and is not implausibly in the future). Returns a datetime or None so callers
-    can use it as a strict recency filter."""
+def _parse_date_any(date_str: str):
+    """Parse a date string in any recognised format (incl. ASX strings). None if it
+    doesn't parse."""
     if not date_str:
         return None
     s = str(date_str).strip()
-    dt = None
     for fmt in _DATE_FORMATS:
         try:
-            dt = datetime.strptime(s, fmt)
-            break
+            return datetime.strptime(s, fmt)
         except (ValueError, TypeError):
             continue
-    if dt is None:
-        dt = parse_asx_date(s)
+    return parse_asx_date(s)
+
+
+def _parse_within_days(date_str: str, days: int):
+    """Return the parsed date only if it falls within the last `days` (and is not
+    implausibly in the future); else None. Strict - undated -> None."""
+    dt = _parse_date_any(date_str)
     if dt is None:
         return None
     now = datetime.now()
-    cutoff = now - timedelta(days=days)
-    # Allow up to 2 days ahead to tolerate timezone/date drift in sources.
-    if cutoff <= dt <= now + timedelta(days=2):
+    if now - timedelta(days=days) <= dt <= now + timedelta(days=2):
         return dt
     return None
+
+
+def _is_stale(date_str: str, days: int) -> bool:
+    """True ONLY if the date parses AND is older than `days` ago. Undated or
+    unparseable dates are treated as NOT stale, so a recency-scoped search that
+    returns an item without a clean date is kept rather than silently dropped
+    (the strictness lives in the materiality judge, not in date-parsing)."""
+    dt = _parse_date_any(date_str)
+    if dt is None:
+        return False
+    return dt < datetime.now() - timedelta(days=days)
 
 
 def research_new_information(client: anthropic.Anthropic, stock: dict) -> dict:
@@ -1541,10 +1556,10 @@ You MUST search for current prices of these commodities and include them in your
 **SEARCH STRATEGY:**
 Search for: {', '.join(f'"{t}"' for t in search_terms[:2])}
 
-**STRICT DATE REQUIREMENTS:**
-- ONLY include information published within the LAST 7 DAYS
-- You MUST include the exact publication date for each item
-- Do NOT include anything older than 7 days, however relevant
+**DATE REQUIREMENTS:**
+- Focus on information from the LAST 2 WEEKS; prioritise the freshest data points
+- Include the publication date for each item (as exact as you can find it)
+- Do NOT include anything clearly older than ~2 weeks
 
 **SOURCE HIERARCHY:**
 1. Industry-specific trade publications: {industry_pubs}
@@ -1582,16 +1597,17 @@ After searching, provide JSON only (no other text):
         if json_match:
             data = json.loads(json_match.group())
 
-            # POST-PROCESS: keep only items with a parseable date in the last 7 days
+            # POST-PROCESS: drop only items we can PROVE are old (>21d); keep recent
+            # and undated ones (the search is recency-scoped). The materiality judge,
+            # not date-parsing, decides what actually earns a place in the email.
             if 'data_points' in data:
                 filtered_points = []
                 for point in data['data_points']:
                     if point is None:
                         continue
-                    pub_date = _parse_within_days(point.get('publication_date'), 7)
-                    if pub_date is None:
+                    if _is_stale(point.get('publication_date'), 21):
                         continue
-                    point['is_new'] = True  # whole window is 7 days
+                    point['is_new'] = True  # survived the recency-scoped search
                     filtered_points.append(point)
 
                 data['data_points'] = filtered_points
@@ -1642,11 +1658,12 @@ Global / unlisted: {', '.join(unlisted_comps) if unlisted_comps else 'None speci
 - "Comp SGS (-2.7%): Q2 Natural Resources organic growth accelerated to 6.9% (Q1 4.2%), Minerals high-single-digit; directionally supportive of the Commodities guide but below the peer's own 20% Minerals growth."
 Note how each line has: the peer, its share-price move if known, the hard numbers, and the explicit read-through.
 
-**STRICT DATE REQUIREMENTS:**
-- ONLY information published within the LAST 7 DAYS; verify and include the exact date
-- Do NOT include anything older than 7 days, however relevant the read-through
+**DATE REQUIREMENTS:**
+- Focus on the LAST 2 WEEKS; prioritise the freshest results/quotes
+- Include the publication date for each item (as exact as you can find it)
+- Do NOT include anything clearly older than ~2 weeks
 
-**EXCLUDED:** IBISWorld / Mordor Intelligence / market-research aggregators; generic analyst price-target notes; anything older than 7 days.
+**EXCLUDED:** IBISWorld / Mordor Intelligence / market-research aggregators; generic analyst price-target notes; anything clearly older than ~2 weeks.
 
 After searching, provide JSON only (no other text):
 {{
@@ -1688,15 +1705,16 @@ If NOTHING relevant within the last 7 days, return:
         if json_match:
             competitor_data = json.loads(json_match.group())
             
-            # POST-PROCESS: keep only items with a parseable date in the last 7 days
+            # POST-PROCESS: drop only items we can PROVE are old (>21d); keep recent
+            # and undated ones. Materiality is decided by the judge, not date-parsing.
             if 'competitor_news' in competitor_data:
                 filtered_news = []
                 for item in competitor_data['competitor_news']:
                     if item is None:
                         continue
-                    if _parse_within_days(item.get('publication_date'), 7) is None:
+                    if _is_stale(item.get('publication_date'), 21):
                         continue
-                    item['is_new'] = True  # whole window is 7 days
+                    item['is_new'] = True  # survived the recency-scoped search
                     filtered_news.append(item)
 
                 competitor_data['competitor_news'] = filtered_news
@@ -1704,7 +1722,7 @@ If NOTHING relevant within the last 7 days, return:
                 # Update no_recent_news flag if all items were filtered out
                 if not filtered_news:
                     competitor_data['no_recent_news'] = True
-                    competitor_data['no_recent_news_note'] = "No material watchlist read-through in the last 7 days."
+                    competitor_data['no_recent_news_note'] = "No material watchlist read-through in the last 2 weeks."
     except (json.JSONDecodeError, AttributeError):
         pass
     
@@ -1757,8 +1775,8 @@ def research_competitors_asx(client: anthropic.Anthropic, competitor_codes: list
         
         latest = sensitive[0]
 
-        # Only include if the announcement is within the last 7 days.
-        if _parse_within_days(latest['date'], 7) is None:
+        # Only include if the announcement is within the last ~2 weeks.
+        if _parse_within_days(latest['date'], 14) is None:
             continue
 
         competitor_news.append({
@@ -1858,13 +1876,13 @@ def format_digest_html(digest_items: list, today: str) -> str:
 KEY UPDATES — {today}
 </h2>
 <p style="margin:0 0 8px 0;color:#95a5a6;font-size:11px;font-style:italic;">
-Holdings with a MATERIAL development in the last 7 days (earnings, competitive position or a real change in the business), drawn from filings and peer earnings-call transcripts. Click a ticker to jump to the detail.
+Holdings with a MATERIAL recent development (earnings, competitive position or a real change in the business), drawn from filings and peer earnings-call transcripts. Click a ticker to jump to the detail.
 </p>"""
 
     if not digest_items:
         return header + """
 <p style="margin:6px 0 0 0;color:#5d6d7e;font-size:13px;">
-No holding had a material development in the last 7 days. Full portfolio status is at the bottom of this email.
+No holding had a material development this period. Full portfolio status is at the bottom of this email.
 </p>
 <hr style="border:none;border-top:2px solid #ecf0f1;margin:20px 0;">
 """
@@ -1908,7 +1926,7 @@ def format_no_updates_html(entries: list) -> str:
     return f"""
 <hr style="border:none;border-top:1px solid #ecf0f1;margin:30px 0 20px 0;">
 <p style="margin:0 0 4px 0;color:#7f8c8d;font-size:13px;">
-<strong style="color:#95a5a6;">NO MATERIAL UPDATES OR READ-THROUGH THIS WEEK ({len(labels)})</strong>
+<strong style="color:#95a5a6;">NO MATERIAL UPDATES OR READ-THROUGH ({len(labels)})</strong>
 </p>
 <p style="margin:0;color:#95a5a6;font-size:12px;line-height:1.6;">
 {listing}
@@ -2011,9 +2029,9 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
                 item += f'<br><em style="color:#7f8c8d;font-size:0.9em;">→ {relevance}</em>'
 
             ind_items.append(f'<li>{item}</li>')
-        industry_html = "\n".join(ind_items) if ind_items else "<li>No key driver data in the last 7 days.</li>"
+        industry_html = "\n".join(ind_items) if ind_items else "<li>No recent key driver data.</li>"
     else:
-        industry_html = "<li>No key driver data in the last 7 days.</li>"
+        industry_html = "<li>No recent key driver data.</li>"
     
     # Watchlist updates - peer earnings/transcript items relevant to the holding
     # (with [NEW] tag for items from last 7 days)
@@ -2095,14 +2113,14 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">KEY DRIVERS (Last 7 Days):</strong>
+<strong style="color:#2980b9;">KEY DRIVERS (Recent):</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
 {industry_html}
 </ul>
 
 <p style="margin:15px 0 2px 0;line-height:1.6;">
-<strong style="color:#2980b9;">WATCHLIST — RELEVANT UPDATES (Earnings &amp; Transcripts, Last 7 Days):</strong>
+<strong style="color:#2980b9;">WATCHLIST — RELEVANT UPDATES (Earnings &amp; Transcripts, Recent):</strong>
 </p>
 <p style="margin:0 0 5px 0;color:#95a5a6;font-size:11px;font-style:italic;">
 {watch_signal_html}
