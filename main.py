@@ -961,6 +961,13 @@ def asx_is_periodic_earnings_report(title: str) -> bool:
 # CLAUDE API FUNCTIONS
 # ============================================================================
 
+# Claude model for research + analysis. The previous model
+# (claude-sonnet-4-20250514) reached end-of-life on 2026-06-15; every call was
+# erroring, which silently emptied the whole email. claude-sonnet-5 is the
+# documented drop-in replacement for that tier.
+RESEARCH_MODEL = "claude-sonnet-5"
+
+
 def get_anthropic_client() -> anthropic.Anthropic:
     """Get Anthropic client."""
     return anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY'))
@@ -970,8 +977,11 @@ def call_claude_with_search(client: anthropic.Anthropic, prompt: str, max_search
     """Call Claude API with web search tool enabled."""
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=RESEARCH_MODEL,
             max_tokens=2000,
+            # Sonnet 5 runs adaptive thinking by default; disable it so the small
+            # max_tokens budget is spent on the JSON answer, not on thinking.
+            thinking={"type": "disabled"},
             tools=[{
                 "type": "web_search_20250305",
                 "name": "web_search",
@@ -994,11 +1004,16 @@ def call_claude_analyze(client: anthropic.Anthropic, prompt: str) -> str:
     """Call Claude API for analysis (no web search)."""
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=RESEARCH_MODEL,
             max_tokens=500,
+            # Disable adaptive thinking so content[0] is the text block and the
+            # 500-token budget isn't consumed by thinking (would truncate the JSON).
+            thinking={"type": "disabled"},
             messages=[{"role": "user", "content": prompt}]
         )
-        return response.content[0].text.strip()
+        text = next((b.text for b in response.content
+                     if getattr(b, "type", None) == "text" and b.text is not None), "")
+        return text.strip() if text else "NO_RESPONSE"
     except Exception as e:
         return f"ERROR: {str(e)}"
 
