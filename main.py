@@ -767,6 +767,42 @@ def get_stock_price(ticker: str) -> dict:
         return {"error": str(e)}
 
 
+# Cache peer moves within a single run so we don't hit Yahoo twice for the same ticker.
+_PEER_MOVE_CACHE: dict = {}
+
+
+def get_peer_move(ticker: str) -> str | None:
+    """Best-effort recent share-price move for a watchlist peer, e.g. '+8.9%' or '-2.7%'.
+
+    Returns None if the ticker can't be resolved (unlisted peers, bad ticker, network
+    error) so the caller can simply omit the '(move)' from the line. Uses a ~1-week
+    window to mirror the broker-note style ('Comp X (+8.9%)').
+    """
+    if not ticker:
+        return None
+    ticker = ticker.strip().strip("()").upper()
+    # Drop obvious non-tickers (names, phrases) - a real ticker is short and has no spaces.
+    if not ticker or ' ' in ticker or len(ticker) > 12:
+        return None
+    if ticker in _PEER_MOVE_CACHE:
+        return _PEER_MOVE_CACHE[ticker]
+
+    move = None
+    try:
+        hist = yf.Ticker(ticker).history(period="7d")
+        if len(hist) >= 2:
+            last = float(hist['Close'].iloc[-1])
+            prior = float(hist['Close'].iloc[0])
+            if prior:
+                pct = (last - prior) / prior * 100
+                move = f"{'+' if pct >= 0 else ''}{pct:.1f}%"
+    except Exception:
+        move = None
+
+    _PEER_MOVE_CACHE[ticker] = move
+    return move
+
+
 # ============================================================================
 # ASX SCRAPER FUNCTIONS
 # ============================================================================
@@ -965,6 +1001,79 @@ def call_claude_analyze(client: anthropic.Anthropic, prompt: str) -> str:
         return response.content[0].text.strip()
     except Exception as e:
         return f"ERROR: {str(e)}"
+
+
+def build_digest_line(client: anthropic.Anthropic, stock: dict, price: dict,
+                      new_info: dict, market_update: dict, industry: dict,
+                      watchlist: dict) -> dict:
+    """Synthesise a single broker-style digest line for the top-of-email summary.
+
+    Reuses the data already gathered for the stock (its own filings plus peer
+    read-throughs) - no web search. Returns {"ticker","sentiment","line"}.
+    Sentiment is one of Positive / Neutral / Negative / Restricted.
+    """
+    def _titles(items, keys):
+        out = []
+        for it in (items or []):
+            if not it:
+                continue
+            parts = [str(it.get(k)) for k in keys if it.get(k)]
+            if parts:
+                out.append(" - ".join(parts))
+        return out
+
+    own = _titles(new_info.get('items'), ['type', 'title', 'summary'])[:4]
+    mu = market_update or {}
+    mu_line = ""
+    if mu.get('update_type') and mu.get('update_type') != 'Not found':
+        mu_line = f"{mu.get('update_type')}: {mu.get('key_financials','')} | guidance: {mu.get('guidance','')}"
+    drivers = _titles(industry.get('data_points'), ['fact'])[:4]
+    peers = []
+    for it in (watchlist.get('competitor_news') or [])[:5]:
+        if not it:
+            continue
+        move = f" ({it.get('peer_move')})" if it.get('peer_move') else ""
+        q = f' Quote: "{it.get("quote")}"' if it.get('quote') else ""
+        peers.append(f"{it.get('competitor','')}{move}: {it.get('news','')}.{q} Read-through: {it.get('implications','')}")
+
+    change = price.get('change_percent')
+    price_line = f"{change:+.1f}% yest" if isinstance(change, (int, float)) else "n/a"
+
+    prompt = f"""You are writing ONE line of a broker morning note for {stock['name']} (ASX: {stock['asx_code']}).
+
+Share price: {price_line}
+Company's own recent filings/announcements: {own or 'none'}
+Latest market update: {mu_line or 'none'}
+Key drivers found: {drivers or 'none'}
+Peer read-throughs (with price moves and any transcript quotes): {peers or 'none'}
+
+Write a SINGLE concise, specific, ACTIONABLE line in this exact style (note the hard numbers and the peer/read-through):
+"Comp Cleveland-Cliffs (+8.9%): Q3 cited tight domestic conditions and auto demand at a 2-year high; lead times out to 9 weeks. Read-through: supportive for US spreads."
+"Q4 platform FUA A$135.8bn (+28% yoy), record net inflows A$5.1bn; Netwealth call flagged incumbents still losing flow to specialists."
+
+Rules:
+- Lead with the single most important, most recent, most actionable fact (prefer a hard number or a transcript read-through).
+- Keep it under ~50 words. No preamble, no ticker prefix, no sentiment label - JUST the sentence(s).
+- If nothing material happened, say so briefly (e.g. "No material update; quiet fortnight.").
+
+Then output STRICT JSON only:
+{{"sentiment": "Positive|Neutral|Negative|Restricted", "line": "the one-liner"}}"""
+
+    raw = call_claude_analyze(client, prompt)
+    sentiment, line = "Neutral", ""
+    try:
+        m = re.search(r'\{[\s\S]*\}', raw)
+        if m:
+            obj = json.loads(m.group())
+            sentiment = obj.get('sentiment') or "Neutral"
+            line = (obj.get('line') or "").strip()
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    if sentiment not in ("Positive", "Neutral", "Negative", "Restricted"):
+        sentiment = "Neutral"
+    if not line:
+        line = "No material update in the last fortnight."
+    return {"ticker": stock['asx_code'], "sentiment": sentiment, "line": line}
 
 
 # ============================================================================
@@ -1467,72 +1576,70 @@ def research_competitors(client: anthropic.Anthropic, stock: dict) -> dict:
     unlisted_comps = [c for c in watchlist if '.AX)' not in c and 'ASX:' not in c]
     watch_signal = stock.get('watch_signal', '')
 
-    prompt = f"""You are monitoring a WATCHLIST of peer companies for updates that are RELEVANT to {stock['name']} (ASX: {stock['asx_code']}).
+    prompt = f"""You are an equities analyst writing a tight, ACTIONABLE morning-note read-through on {stock['name']} (ASX: {stock['asx_code']}) from what its watchlist peers just reported.
 
-**WHY THIS MATTERS:** {watch_signal if watch_signal else f"These are the closest comparables and read-throughs for {stock['name']}."}
+**THE KEY SIGNAL / WHY THESE PEERS MATTER:** {watch_signal if watch_signal else f"These are the closest comparables and read-throughs for {stock['name']}."}
 
 **WATCHLIST COMPANIES TO MONITOR:**
 Listed: {', '.join(listed_comps) if listed_comps else 'None specified'}
 Global / unlisted: {', '.join(unlisted_comps) if unlisted_comps else 'None specified'}
 
-**WHAT TO LOOK FOR (in priority order):**
-1. EARNINGS / RESULTS updates - quarterly or half-year results, trading updates, guidance changes. This is the #1 priority.
-2. Direct QUOTES from earnings-call transcripts or management commentary that read across to {stock['name']} (e.g. demand trends, pricing, volumes, a shared end-market or the key signal above).
-3. Material strategic actions - contract wins/losses, M&A, capacity/product moves - but ONLY if they have a clear read-through to {stock['name']}.
+**WHAT TO LOOK FOR (priority order):**
+1. EARNINGS / RESULTS - the peer's latest quarterly/half-year result or trading update, with the SPECIFIC numbers that matter (segment organic growth %, margins, volumes, pricing, guidance changes). This is #1.
+2. A direct QUOTE from the earnings-call TRANSCRIPT or management commentary that reads across to {stock['name']} - especially on the key signal above (demand, pricing, volumes, a shared end-market).
+3. Material strategic actions (contract wins/losses, M&A, capacity) ONLY if they read through to {stock['name']}.
 
-**RELEVANCE FILTER (critical):**
-- ONLY include an item if it tells us something useful about {stock['name']} or its industry.
-- For EACH item, explain the read-through in the "implications" field. If you cannot articulate why it matters to {stock['name']}, DO NOT include it.
+**WHERE TO FIND TRANSCRIPTS (search these - most are free):**
+- The Motley Fool earnings-call transcripts (fool.com/earnings/call-transcripts)
+- The company's own investor-relations transcript / webcast / results presentation
+- Roic.ai, TIKR, or Quartr transcript pages
+- Then AFR, Bloomberg, Reuters, WSJ, FT for coverage and numbers
+(Seeking Alpha transcripts are usually paywalled - prefer the free sources above; don't fabricate a quote you can't verify.)
+
+**STYLE - WRITE LIKE THIS (concise, specific, quantified, with the read-through spelled out):**
+- "Comp Cleveland-Cliffs (+8.9%): Q3 cited tight domestic conditions (subdued imports, S232 support) and auto demand at a 2-year high; lead times out to 9 weeks -> supply can't keep pace. Read-through: supportive for BSL US spreads."
+- "Comp SGS (-2.7%): Q2 Natural Resources organic growth accelerated to 6.9% (Q1 4.2%), Minerals high-single-digit; directionally supportive of the Commodities guide but below the peer's own 20% Minerals growth."
+Note how each line has: the peer, its share-price move if known, the hard numbers, and the explicit read-through.
 
 **STRICT DATE REQUIREMENTS:**
-- ONLY include information published within the LAST 2 MONTHS (60 days)
-- You MUST verify and include the publication date for each item
-- Mark items published in the LAST 7 DAYS with "is_new": true
+- ONLY information published within the LAST 2 MONTHS (60 days); verify and include the date
+- Mark items from the LAST 7 DAYS with "is_new": true
 
-**SOURCE HIERARCHY (prioritize in this order):**
-1. Company results releases, investor presentations and earnings-call transcripts
-2. Industry-specific trade publications
-3. Tier-one financial news: AFR, WSJ, Bloomberg, Reuters, SMH, The Australian, FT
+**EXCLUDED:** IBISWorld / Mordor Intelligence / market-research aggregators; generic analyst price-target notes; anything older than 2 months.
 
-**EXCLUDED SOURCES - DO NOT CITE:**
-- IBISWorld, Mordor Intelligence, or similar market research aggregators
-- Generic analyst price-target notes or opinion pieces
-- Any article older than 2 months
-
-After searching, provide the following in JSON format only (no other text):
+After searching, provide JSON only (no other text):
 {{
     "competitor_news": [
         {{
-            "competitor": "Watchlist company name",
-            "news": "The specific earnings result, guidance change or action (with key numbers where available)",
-            "quote": "A direct quote from the transcript / management commentary if available, otherwise null",
-            "publication_date": "REQUIRED - exact date from the source (e.g., 'January 15, 2026')",
+            "competitor": "Peer name",
+            "peer_ticker": "Exchange ticker for the peer if known (e.g. 'CLF', 'RIO.AX', 'CMG'), else null",
+            "news": "The result/action with the SPECIFIC numbers that matter - segment growth %, margin, volume, guidance",
+            "quote": "A verbatim quote from the transcript/management commentary, else null",
+            "publication_date": "REQUIRED - exact date (e.g., 'January 15, 2026')",
             "is_new": true/false,
-            "source_name": "Publication or 'Earnings call transcript'",
+            "source_name": "e.g. 'Motley Fool transcript', 'Q2 results call', 'AFR'",
             "source_url": "Actual URL from search results, or null",
-            "implications": "REQUIRED - the read-through: what this specifically means for {stock['name']}"
+            "implications": "REQUIRED - the actionable read-through to {stock['name']}, one sharp sentence"
         }}
     ],
     "no_recent_news": false,
     "no_recent_news_note": null
 }}
 
-If NO relevant watchlist updates were found within the 2-month window, return:
+If NOTHING relevant within 2 months, return:
 {{
     "competitor_news": [],
     "no_recent_news": true,
-    "no_recent_news_note": "No material watchlist updates with a read-through to {stock['name']} in the last 2 months."
+    "no_recent_news_note": "No material watchlist read-through for {stock['name']} in the last 2 months."
 }}
 
 **CRITICAL RULES:**
-- EVERY item must have a verified publication_date within the last 2 months
-- Set "is_new": true if published within the last 7 days, otherwise false
-- Prioritise earnings/results and transcript quotes over generic news
-- EVERY item must have an "implications" read-through to {stock['name']} - drop items that don't
-- Prefer a direct "quote" where the transcript/commentary is available; use null if not
+- Lead with EARNINGS numbers and a TRANSCRIPT quote wherever one exists - that is the whole point.
+- Every "news" must carry specific figures; every item must have a sharp "implications" read-through. Drop anything vague or non-actionable.
+- Do NOT invent quotes, numbers or dates. If you cannot verify it, leave the field null or omit the item.
 """
-    
-    result = call_claude_with_search(client, prompt, max_searches=2)
+
+    result = call_claude_with_search(client, prompt, max_searches=3)
     
     competitor_data = None
     try:
@@ -1613,7 +1720,13 @@ If NO relevant watchlist updates were found within the 2-month window, return:
             if competitor_data.get('no_recent_news') and asx_competitor_news:
                 competitor_data['no_recent_news'] = False
                 competitor_data['no_recent_news_note'] = None
-    
+
+    # Enrich each item with a best-effort peer share-price move ('Comp X (+8.9%)')
+    for item in competitor_data.get('competitor_news', []):
+        if not item or item.get('peer_move'):
+            continue
+        item['peer_move'] = get_peer_move(item.get('peer_ticker'))
+
     return competitor_data
 
 
@@ -1644,6 +1757,7 @@ def research_competitors_asx(client: anthropic.Anthropic, competitor_codes: list
         
         competitor_news.append({
             "competitor": f"{code} (ASX)",
+            "peer_ticker": f"{code}.AX",
             "news": latest['title'],
             "quote": None,
             "publication_date": latest['date'],
@@ -1716,7 +1830,60 @@ def save_to_cache(asx_code: str, cache_type: str, data: dict):
 # HTML FORMATTING
 # ============================================================================
 
-def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_update: dict, 
+# Sentiment badge colours for the top digest.
+_SENTIMENT_STYLE = {
+    "Positive":   ("#1e7e34", "#e6f4ea"),
+    "Negative":   ("#c0392b", "#fdecea"),
+    "Neutral":    ("#5d6d7e", "#eef1f3"),
+    "Restricted": ("#8a6d00", "#fff3cd"),
+}
+
+
+def format_digest_html(digest_items: list, today: str) -> str:
+    """Render the broker-style KEY UPDATES digest at the very top of the email.
+
+    One concise, sentiment-tagged line per holding, each linking down to its
+    detailed section. `digest_items` is a list of
+    {"ticker","sentiment","line"} dicts, in email order.
+    """
+    if not digest_items:
+        return ""
+
+    rows = []
+    for d in digest_items:
+        if not d:
+            continue
+        ticker = d.get('ticker', '')
+        sentiment = d.get('sentiment', 'Neutral')
+        line = d.get('line', '')
+        fg, bg = _SENTIMENT_STYLE.get(sentiment, _SENTIMENT_STYLE["Neutral"])
+        badge = (f'<span style="display:inline-block;min-width:62px;text-align:center;'
+                 f'font-size:11px;font-weight:bold;color:{fg};background:{bg};'
+                 f'border-radius:3px;padding:1px 6px;">{sentiment}</span>')
+        rows.append(
+            f'<tr style="border-bottom:1px solid #f0f0f0;">'
+            f'<td style="padding:6px 8px;vertical-align:top;white-space:nowrap;">'
+            f'<a href="#stock-{ticker}" style="color:#2c3e50;font-weight:bold;text-decoration:none;">{ticker}</a></td>'
+            f'<td style="padding:6px 8px;vertical-align:top;white-space:nowrap;">{badge}</td>'
+            f'<td style="padding:6px 8px;vertical-align:top;color:#2c3e50;font-size:13px;line-height:1.5;">{line}</td>'
+            f'</tr>'
+        )
+
+    return f"""
+<h2 id="top" style="color:#2c3e50;margin-top:0;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
+KEY UPDATES — {today}
+</h2>
+<p style="margin:0 0 8px 0;color:#95a5a6;font-size:11px;font-style:italic;">
+Most actionable read-through per holding, drawn from filings and peer earnings-call transcripts. Click a ticker to jump to the detail.
+</p>
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:10px;">
+{chr(10).join(rows)}
+</table>
+<hr style="border:none;border-top:2px solid #ecf0f1;margin:20px 0;">
+"""
+
+
+def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_update: dict,
                       industry: dict, competitors: dict, stock_num: int) -> str:
     """Format all researched data into HTML."""
     
@@ -1841,7 +2008,14 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
             is_new = news_item.get('is_new', False)
             new_tag = '<span style="color:#e74c3c;font-weight:bold;">[NEW]</span> ' if is_new else ''
 
-            item = f"{new_tag}<strong>{competitor_name}:</strong> {news_desc}"
+            # Peer share-price move, broker style: "Chipotle (+8.9%)"
+            peer_move = news_item.get('peer_move')
+            move_html = ''
+            if peer_move:
+                move_color = "#27ae60" if str(peer_move).startswith('+') else "#e74c3c"
+                move_html = f' <span style="color:{move_color};font-weight:bold;">({peer_move})</span>'
+
+            item = f"{new_tag}<strong>{competitor_name}</strong>{move_html}<strong>:</strong> {news_desc}"
 
             source_name = news_item.get('source_name')
             pub_date = news_item.get('publication_date') or news_item.get('date')
@@ -1876,9 +2050,11 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
         competitor_html = "\n".join(comp_items) if comp_items else "<li>No watchlist updates from the last 2 months.</li>"
     
     # Assemble HTML
+    sector_label = stock.get('sector', '')
     html = f"""
-<h2 style="color:#34495e;margin-top:30px;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
+<h2 id="stock-{stock['asx_code']}" style="color:#34495e;margin-top:30px;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
 {stock_num}. {stock['name']} ({stock['ticker']})
+<span style="font-size:12px;font-weight:normal;color:#95a5a6;"> · {sector_label} · <a href="#top" style="color:#bdc3c7;text-decoration:none;">↑ top</a></span>
 </h2>
 
 <p style="margin:10px 0;line-height:1.6;">
@@ -2037,7 +2213,8 @@ def main():
     today_str = datetime.now().strftime("%B %d, %Y")
     
     all_html = ""
-    
+    digest_items = []
+
     for i, stock in enumerate(STOCKS, 1):
         print(f"\n{'=' * 70}")
         print(f"📊 STOCK {i}/{len(STOCKS)}: {stock['name']}  [{stock.get('sector', '')}]")
@@ -2077,8 +2254,18 @@ def main():
         competitors = research_competitors(client, stock)
         comp_status = "✅" if len(competitors.get('competitor_news', [])) > 0 or competitors.get('no_recent_news') else "⚠️"
         print(comp_status)
-        
-        # Step 6: Format HTML
+
+        # Step 6: Build the top-of-email digest line (synthesis, no web search)
+        print("   📌 Building digest line...", end=" ")
+        try:
+            digest = build_digest_line(client, stock, price, new_info, market_update, industry, competitors)
+            print(f"✅ [{digest['sentiment']}]")
+        except Exception as e:
+            print(f"❌ {e}")
+            digest = {"ticker": stock['asx_code'], "sentiment": "Neutral", "line": "Update unavailable."}
+        digest_items.append(digest)
+
+        # Step 7: Format HTML
         print("   📝 Formatting HTML...", end=" ")
         try:
             stock_html = format_stock_html(stock, price, new_info, market_update, industry, competitors, i)
@@ -2088,12 +2275,13 @@ def main():
         except Exception as e:
             print(f"❌ {e}")
             stock_html = f"<h2>{stock['name']} - Error: {str(e)}</h2><hr>"
-        
+
         all_html += stock_html
-    
-    # Final assembly
+
+    # Final assembly - digest first, then the detailed sections
     print(f"\n📧 Assembling email...")
-    final_html = wrap_in_template(all_html, today_str)
+    digest_html = format_digest_html(digest_items, today_str)
+    final_html = wrap_in_template(digest_html + all_html, today_str)
     print(f"📄 Total: {len(final_html)} chars")
     
     # Send
