@@ -1003,77 +1003,101 @@ def call_claude_analyze(client: anthropic.Anthropic, prompt: str) -> str:
         return f"ERROR: {str(e)}"
 
 
+def _has_week_signal(new_info: dict, industry: dict, watchlist: dict) -> bool:
+    """True if there is ANY last-7-days signal to assess: the company's own recent
+    ASX announcements, a key driver flagged new, or a watchlist item flagged new."""
+    own = bool((new_info or {}).get('items'))
+    drv = any(p and p.get('is_new') for p in (industry or {}).get('data_points', []))
+    peer = any(c and c.get('is_new') for c in (watchlist or {}).get('competitor_news', []))
+    return own or drv or peer
+
+
 def build_digest_line(client: anthropic.Anthropic, stock: dict, price: dict,
                       new_info: dict, market_update: dict, industry: dict,
                       watchlist: dict) -> dict:
-    """Synthesise a single broker-style digest line for the top-of-email summary.
+    """Decide whether this holding has a MATERIAL development in the last 7 days and,
+    if so, synthesise a broker-style digest line.
 
-    Reuses the data already gathered for the stock (its own filings plus peer
-    read-throughs) - no web search. Returns {"ticker","sentiment","line"}.
-    Sentiment is one of Positive / Neutral / Negative / Restricted.
+    Returns {"ticker","material","sentiment","line"}. `material` gates whether the
+    holding earns a digest line + a full section; non-material holdings are swept
+    into the bottom "no material updates" list. No web search (reuses gathered data).
+
+    Materiality test (both the recency gate AND the two business questions):
+      - Is there something from the LAST 7 DAYS? (recency gate)
+      - Could it impact EARNINGS, the COMPETITIVE ADVANTAGE, or reflect a real
+        CHANGE in the business? (routine admin filings do not count)
     """
-    def _titles(items, keys):
+    ticker = stock['asx_code']
+
+    # Recency gate: no last-7-days signal at all -> not material, skip the LLM call.
+    if not _has_week_signal(new_info, industry, watchlist):
+        return {"ticker": ticker, "material": False, "sentiment": "Neutral", "line": ""}
+
+    def _titles(items, keys, only_new=False):
         out = []
         for it in (items or []):
-            if not it:
+            if not it or (only_new and not it.get('is_new')):
                 continue
             parts = [str(it.get(k)) for k in keys if it.get(k)]
             if parts:
                 out.append(" - ".join(parts))
         return out
 
-    own = _titles(new_info.get('items'), ['type', 'title', 'summary'])[:4]
-    mu = market_update or {}
-    mu_line = ""
-    if mu.get('update_type') and mu.get('update_type') != 'Not found':
-        mu_line = f"{mu.get('update_type')}: {mu.get('key_financials','')} | guidance: {mu.get('guidance','')}"
-    drivers = _titles(industry.get('data_points'), ['fact'])[:4]
+    own = _titles(new_info.get('items'), ['type', 'title', 'summary'])[:5]
+    drivers = _titles(industry.get('data_points'), ['fact'], only_new=True)[:4]
     peers = []
-    for it in (watchlist.get('competitor_news') or [])[:5]:
-        if not it:
+    for it in (watchlist.get('competitor_news') or []):
+        if not it or not it.get('is_new'):
             continue
         move = f" ({it.get('peer_move')})" if it.get('peer_move') else ""
         q = f' Quote: "{it.get("quote")}"' if it.get('quote') else ""
         peers.append(f"{it.get('competitor','')}{move}: {it.get('news','')}.{q} Read-through: {it.get('implications','')}")
+    peers = peers[:5]
 
     change = price.get('change_percent')
     price_line = f"{change:+.1f}% yest" if isinstance(change, (int, float)) else "n/a"
 
-    prompt = f"""You are writing ONE line of a broker morning note for {stock['name']} (ASX: {stock['asx_code']}).
+    prompt = f"""You are a portfolio analyst deciding whether {stock['name']} (ASX: {stock['asx_code']}) deserves a spot in today's KEY UPDATES note, and if so writing its one line.
 
+ONLY consider developments from the LAST 7 DAYS:
+- Company's own announcements (last 7 days): {own or 'none'}
+- Key drivers flagged new this week: {drivers or 'none'}
+- Peer read-throughs flagged new this week (moves + transcript quotes): {peers or 'none'}
 Share price: {price_line}
-Company's own recent filings/announcements: {own or 'none'}
-Latest market update: {mu_line or 'none'}
-Key drivers found: {drivers or 'none'}
-Peer read-throughs (with price moves and any transcript quotes): {peers or 'none'}
 
-Write a SINGLE concise, specific, ACTIONABLE line in this exact style (note the hard numbers and the peer/read-through):
-"Comp Cleveland-Cliffs (+8.9%): Q3 cited tight domestic conditions and auto demand at a 2-year high; lead times out to 9 weeks. Read-through: supportive for US spreads."
-"Q4 platform FUA A$135.8bn (+28% yoy), record net inflows A$5.1bn; Netwealth call flagged incumbents still losing flow to specialists."
+STEP 1 - MATERIALITY TEST. Mark it material ONLY if a last-7-days development answers YES to at least one:
+  (a) Could it impact the company's EARNINGS / revenue?
+  (b) Does it affect its COMPETITIVE ADVANTAGE or position?
+  (c) Does it reflect a genuine CHANGE in the business (strategy, capital, management, structure)?
+Routine administrative filings do NOT count on their own: Appendix 3B/3Y/3Z, change of director's interest, becoming/ceasing a substantial holder, dividend/distribution admin, notice of meeting, TMD updates, buy-back daily notices. A peer read-through counts ONLY if it genuinely informs THIS company's outlook.
 
-Rules:
-- Lead with the single most important, most recent, most actionable fact (prefer a hard number or a transcript read-through).
-- Keep it under ~50 words. No preamble, no ticker prefix, no sentiment label - JUST the sentence(s).
-- If nothing material happened, say so briefly (e.g. "No material update; quiet fortnight.").
+STEP 2 - If MATERIAL, write ONE concise, specific, ACTIONABLE line in this style (hard numbers + the read-through):
+"Q4 platform FUA A$135.8bn (+28% yoy), record inflows A$5.1bn; Netwealth call flagged incumbents still losing flow to specialists."
+"Comp Cleveland-Cliffs (+8.9%): Q3 lead times out to 9 weeks, auto demand 2-yr high. Read-through: supportive for US spreads."
+Keep under ~50 words. No ticker prefix, no preamble.
 
-Then output STRICT JSON only:
-{{"sentiment": "Positive|Neutral|Negative|Restricted", "line": "the one-liner"}}"""
+Output STRICT JSON only:
+{{"material": true/false, "sentiment": "Positive|Neutral|Negative|Restricted", "line": "the one-liner, or empty string if not material"}}"""
 
     raw = call_claude_analyze(client, prompt)
-    sentiment, line = "Neutral", ""
+    material, sentiment, line = False, "Neutral", ""
     try:
         m = re.search(r'\{[\s\S]*\}', raw)
         if m:
             obj = json.loads(m.group())
+            material = bool(obj.get('material'))
             sentiment = obj.get('sentiment') or "Neutral"
             line = (obj.get('line') or "").strip()
     except (json.JSONDecodeError, AttributeError):
         pass
     if sentiment not in ("Positive", "Neutral", "Negative", "Restricted"):
         sentiment = "Neutral"
-    if not line:
-        line = "No material update in the last fortnight."
-    return {"ticker": stock['asx_code'], "sentiment": sentiment, "line": line}
+    if material and not line:
+        # Model said material but gave no line - fall back rather than drop it.
+        line = "Material development in the last week - see detail below."
+    if not material:
+        line = ""
+    return {"ticker": ticker, "material": material, "sentiment": sentiment, "line": line}
 
 
 # ============================================================================
@@ -1846,8 +1870,21 @@ def format_digest_html(digest_items: list, today: str) -> str:
     detailed section. `digest_items` is a list of
     {"ticker","sentiment","line"} dicts, in email order.
     """
+    header = f"""
+<h2 id="top" style="color:#2c3e50;margin-top:0;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
+KEY UPDATES — {today}
+</h2>
+<p style="margin:0 0 8px 0;color:#95a5a6;font-size:11px;font-style:italic;">
+Holdings with a MATERIAL development in the last 7 days (earnings, competitive position or a real change in the business), drawn from filings and peer earnings-call transcripts. Click a ticker to jump to the detail.
+</p>"""
+
     if not digest_items:
-        return ""
+        return header + """
+<p style="margin:6px 0 0 0;color:#5d6d7e;font-size:13px;">
+No holding had a material development in the last 7 days. Full portfolio status is at the bottom of this email.
+</p>
+<hr style="border:none;border-top:2px solid #ecf0f1;margin:20px 0;">
+"""
 
     rows = []
     for d in digest_items:
@@ -1869,17 +1906,30 @@ def format_digest_html(digest_items: list, today: str) -> str:
             f'</tr>'
         )
 
-    return f"""
-<h2 id="top" style="color:#2c3e50;margin-top:0;border-bottom:2px solid #ecf0f1;padding-bottom:8px;">
-KEY UPDATES — {today}
-</h2>
-<p style="margin:0 0 8px 0;color:#95a5a6;font-size:11px;font-style:italic;">
-Most actionable read-through per holding, drawn from filings and peer earnings-call transcripts. Click a ticker to jump to the detail.
-</p>
+    return header + f"""
 <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:10px;">
 {chr(10).join(rows)}
 </table>
 <hr style="border:none;border-top:2px solid #ecf0f1;margin:20px 0;">
+"""
+
+
+def format_no_updates_html(entries: list) -> str:
+    """Bottom-of-email roll-up: every holding with no material last-7-days update,
+    so the full portfolio is accounted for. `entries` is a list of
+    {"ticker","name","sector"} dicts."""
+    if not entries:
+        return ""
+    labels = [f"{e.get('ticker','')} ({e.get('name','')})" for e in entries if e]
+    listing = "; ".join(labels)
+    return f"""
+<hr style="border:none;border-top:1px solid #ecf0f1;margin:30px 0 20px 0;">
+<p style="margin:0 0 4px 0;color:#7f8c8d;font-size:13px;">
+<strong style="color:#95a5a6;">NO MATERIAL UPDATES OR READ-THROUGH THIS WEEK ({len(labels)})</strong>
+</p>
+<p style="margin:0;color:#95a5a6;font-size:12px;line-height:1.6;">
+{listing}
+</p>
 """
 
 
@@ -2213,7 +2263,9 @@ def main():
     today_str = datetime.now().strftime("%B %d, %Y")
     
     all_html = ""
-    digest_items = []
+    digest_items = []     # holdings with a material last-7-days development
+    no_update_items = []  # holdings swept into the bottom roll-up
+    section_num = 0       # running number for the big sections actually shown
 
     for i, stock in enumerate(STOCKS, 1):
         print(f"\n{'=' * 70}")
@@ -2255,20 +2307,29 @@ def main():
         comp_status = "✅" if len(competitors.get('competitor_news', [])) > 0 or competitors.get('no_recent_news') else "⚠️"
         print(comp_status)
 
-        # Step 6: Build the top-of-email digest line (synthesis, no web search)
-        print("   📌 Building digest line...", end=" ")
+        # Step 6: Materiality gate - is there a MATERIAL last-7-days development?
+        print("   📌 Assessing materiality...", end=" ")
         try:
             digest = build_digest_line(client, stock, price, new_info, market_update, industry, competitors)
-            print(f"✅ [{digest['sentiment']}]")
+            print(f"{'✅ MATERIAL' if digest['material'] else '➖ skip'} [{digest['sentiment']}]")
         except Exception as e:
             print(f"❌ {e}")
-            digest = {"ticker": stock['asx_code'], "sentiment": "Neutral", "line": "Update unavailable."}
+            # On error, don't fabricate a section - treat as no material update.
+            digest = {"ticker": stock['asx_code'], "material": False, "sentiment": "Neutral", "line": ""}
+
+        # Non-material holdings are swept into the bottom roll-up; no big section.
+        if not digest.get('material'):
+            no_update_items.append({"ticker": stock['asx_code'], "name": stock['name'],
+                                    "sector": stock.get('sector', '')})
+            continue
+
         digest_items.append(digest)
 
-        # Step 7: Format HTML
-        print("   📝 Formatting HTML...", end=" ")
+        # Step 7: Format the big section (only for material holdings)
+        section_num += 1
+        print("   📝 Formatting section...", end=" ")
         try:
-            stock_html = format_stock_html(stock, price, new_info, market_update, industry, competitors, i)
+            stock_html = format_stock_html(stock, price, new_info, market_update, industry, competitors, section_num)
             if stock_html is None:
                 stock_html = f"<h2>{stock['name']} - Error formatting data</h2><hr>"
             print("✅")
@@ -2278,10 +2339,11 @@ def main():
 
         all_html += stock_html
 
-    # Final assembly - digest first, then the detailed sections
-    print(f"\n📧 Assembling email...")
+    # Final assembly - digest, then material sections, then the no-updates roll-up
+    print(f"\n📧 Assembling email... ({len(digest_items)} material / {len(no_update_items)} quiet)")
     digest_html = format_digest_html(digest_items, today_str)
-    final_html = wrap_in_template(digest_html + all_html, today_str)
+    no_updates_html = format_no_updates_html(no_update_items)
+    final_html = wrap_in_template(digest_html + all_html + no_updates_html, today_str)
     print(f"📄 Total: {len(final_html)} chars")
     
     # Send
