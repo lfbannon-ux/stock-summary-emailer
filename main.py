@@ -1140,6 +1140,57 @@ def format_asx_date(date_str: str) -> str:
     return date_str  # Return original if parsing fails
 
 
+# Formats a date can arrive in (from the ASX scraper or from the LLM research).
+_DATE_FORMATS = ["%d/%m/%Y", "%Y-%m-%d", "%B %d, %Y", "%d %B %Y", "%b %d, %Y",
+                 "%d %b %Y", "%d/%m/%y", "%B %Y", "%b %Y"]
+
+
+def to_ddmmyy(date_str: str) -> str:
+    """Normalise any recognised date string to DD/MM/YY (e.g. '24/07/26').
+
+    Falls back to the ASX parser (which strips trailing times), then returns the
+    original string unchanged if nothing parses so we never lose information.
+    """
+    if not date_str:
+        return ""
+    s = str(date_str).strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).strftime("%d/%m/%y")
+        except (ValueError, TypeError):
+            continue
+    parsed = parse_asx_date(s)  # handles 'DD/MM/YYYY 8:12 am' etc.
+    if parsed:
+        return parsed.strftime("%d/%m/%y")
+    return s
+
+
+def _parse_within_days(date_str: str, days: int):
+    """Parse a date string and return it only if it falls within the last `days`
+    (and is not implausibly in the future). Returns a datetime or None so callers
+    can use it as a strict recency filter."""
+    if not date_str:
+        return None
+    s = str(date_str).strip()
+    dt = None
+    for fmt in _DATE_FORMATS:
+        try:
+            dt = datetime.strptime(s, fmt)
+            break
+        except (ValueError, TypeError):
+            continue
+    if dt is None:
+        dt = parse_asx_date(s)
+    if dt is None:
+        return None
+    now = datetime.now()
+    cutoff = now - timedelta(days=days)
+    # Allow up to 2 days ahead to tolerate timezone/date drift in sources.
+    if cutoff <= dt <= now + timedelta(days=2):
+        return dt
+    return None
+
+
 def research_new_information(client: anthropic.Anthropic, stock: dict) -> dict:
     """
     Research NEW information about the company in the last 7 days.
@@ -1458,7 +1509,7 @@ def research_earnings_asx(client: anthropic.Anthropic, stock: dict) -> dict:
 # ============================================================================
 
 def research_industry(client: anthropic.Anthropic, stock: dict) -> dict:
-    """Research industry dynamics focused on REVENUE DRIVERS. Max 2 months old, flag items from last 7 days as NEW."""
+    """Research industry dynamics focused on REVENUE DRIVERS. Last 7 days only."""
     industry_pubs = ", ".join(stock.get('industry_publications', []))
     
     # Get revenue driver information
@@ -1491,8 +1542,9 @@ You MUST search for current prices of these commodities and include them in your
 Search for: {', '.join(f'"{t}"' for t in search_terms[:2])}
 
 **STRICT DATE REQUIREMENTS:**
-- ONLY include information published within the LAST 2 MONTHS (60 days)
-- Mark items published in the LAST 7 DAYS with "is_new": true
+- ONLY include information published within the LAST 7 DAYS
+- You MUST include the exact publication date for each item
+- Do NOT include anything older than 7 days, however relevant
 
 **SOURCE HIERARCHY:**
 1. Industry-specific trade publications: {industry_pubs}
@@ -1520,65 +1572,30 @@ After searching, provide JSON only (no other text):
 - Include SPECIFIC NUMBERS (prices, rates, percentages, volumes)
 - Every fact must explain its impact on earnings/revenue in the relevance field
 - If searching for commodity prices, include the current price with date
-- Return empty array if no relevant data within 2 months
+- Return empty array if no relevant data within the last 7 days
 """
-    
+
     result = call_claude_with_search(client, prompt, max_searches=2)
-    
+
     try:
         json_match = re.search(r'\{[\s\S]*\}', result)
         if json_match:
             data = json.loads(json_match.group())
-            
-            # POST-PROCESS: Filter out items older than 2 months
+
+            # POST-PROCESS: keep only items with a parseable date in the last 7 days
             if 'data_points' in data:
                 filtered_points = []
-                two_months_ago = datetime.now() - timedelta(days=60)
-                
                 for point in data['data_points']:
                     if point is None:
                         continue
-                    pub_date_str = point.get('publication_date') or ''
-                    
-                    # Skip if no date provided
-                    if not pub_date_str:
+                    pub_date = _parse_within_days(point.get('publication_date'), 7)
+                    if pub_date is None:
                         continue
-                    
-                    # Try to parse the date and validate it's within 2 months
-                    is_valid = False
-                    for fmt in ["%B %d, %Y", "%d %B %Y", "%B %Y", "%d/%m/%Y", "%Y-%m-%d", 
-                                "%b %d, %Y", "%d %b %Y", "%b %Y"]:
-                        try:
-                            pub_date = datetime.strptime(pub_date_str, fmt)
-                            if pub_date >= two_months_ago:
-                                is_valid = True
-                                # Also check if it's within last 7 days for [NEW] tag
-                                seven_days_ago = datetime.now() - timedelta(days=7)
-                                point['is_new'] = pub_date >= seven_days_ago
-                            break
-                        except (ValueError, TypeError):
-                            continue
-                    
-                    # If we couldn't parse the date, check for year indicators
-                    if not is_valid and pub_date_str:
-                        # Reject if contains old years
-                        if any(yr in pub_date_str for yr in ['2024', '2023', '2022', '2021', '2020']):
-                            continue
-                        # Accept if contains recent months
-                        if '2026' in pub_date_str or '2025' in pub_date_str:
-                            # Check for months that are definitely > 2 months old
-                            if any(m in pub_date_str.lower() for m in ['january 2025', 'february 2025', 'march 2025', 
-                                                                         'april 2025', 'may 2025', 'june 2025',
-                                                                         'july 2025', 'august 2025', 'september 2025',
-                                                                         'october 2025', 'november 2025']):
-                                continue  # Skip old 2025 dates
-                            is_valid = True
-                    
-                    if is_valid:
-                        filtered_points.append(point)
-                
+                    point['is_new'] = True  # whole window is 7 days
+                    filtered_points.append(point)
+
                 data['data_points'] = filtered_points
-            
+
             return data
     except (json.JSONDecodeError, AttributeError):
         pass
@@ -1592,7 +1609,7 @@ def research_competitors(client: anthropic.Anthropic, stock: dict) -> dict:
     """
     Research WATCHLIST updates relevant to the holding using Claude web search.
     Prioritises peer earnings/results and transcript quotes with a read-through to
-    the holding. Max 2 months old, flag items from last 7 days as NEW.
+    the holding. Last 7 days only.
     Web search is primary; ASX scraper supplements listed watchlist names.
     """
     watchlist = stock.get('watchlist') or stock.get('competitors') or []
@@ -1626,10 +1643,10 @@ Global / unlisted: {', '.join(unlisted_comps) if unlisted_comps else 'None speci
 Note how each line has: the peer, its share-price move if known, the hard numbers, and the explicit read-through.
 
 **STRICT DATE REQUIREMENTS:**
-- ONLY information published within the LAST 2 MONTHS (60 days); verify and include the date
-- Mark items from the LAST 7 DAYS with "is_new": true
+- ONLY information published within the LAST 7 DAYS; verify and include the exact date
+- Do NOT include anything older than 7 days, however relevant the read-through
 
-**EXCLUDED:** IBISWorld / Mordor Intelligence / market-research aggregators; generic analyst price-target notes; anything older than 2 months.
+**EXCLUDED:** IBISWorld / Mordor Intelligence / market-research aggregators; generic analyst price-target notes; anything older than 7 days.
 
 After searching, provide JSON only (no other text):
 {{
@@ -1650,11 +1667,11 @@ After searching, provide JSON only (no other text):
     "no_recent_news_note": null
 }}
 
-If NOTHING relevant within 2 months, return:
+If NOTHING relevant within the last 7 days, return:
 {{
     "competitor_news": [],
     "no_recent_news": true,
-    "no_recent_news_note": "No material watchlist read-through for {stock['name']} in the last 2 months."
+    "no_recent_news_note": "No material watchlist read-through for {stock['name']} in the last 7 days."
 }}
 
 **CRITICAL RULES:**
@@ -1671,59 +1688,23 @@ If NOTHING relevant within 2 months, return:
         if json_match:
             competitor_data = json.loads(json_match.group())
             
-            # POST-PROCESS: Filter out items older than 2 months
+            # POST-PROCESS: keep only items with a parseable date in the last 7 days
             if 'competitor_news' in competitor_data:
                 filtered_news = []
-                two_months_ago = datetime.now() - timedelta(days=60)
-                
                 for item in competitor_data['competitor_news']:
                     if item is None:
                         continue
-                    pub_date_str = item.get('publication_date') or ''
-                    
-                    # Skip if no date provided
-                    if not pub_date_str:
+                    if _parse_within_days(item.get('publication_date'), 7) is None:
                         continue
-                    
-                    # Try to parse the date and validate it's within 2 months
-                    is_valid = False
-                    for fmt in ["%B %d, %Y", "%d %B %Y", "%B %Y", "%d/%m/%Y", "%Y-%m-%d", 
-                                "%b %d, %Y", "%d %b %Y", "%b %Y"]:
-                        try:
-                            pub_date = datetime.strptime(pub_date_str, fmt)
-                            if pub_date >= two_months_ago:
-                                is_valid = True
-                                # Also check if it's within last 7 days for [NEW] tag
-                                seven_days_ago = datetime.now() - timedelta(days=7)
-                                item['is_new'] = pub_date >= seven_days_ago
-                            break
-                        except (ValueError, TypeError):
-                            continue
-                    
-                    # If we couldn't parse the date, check for year indicators
-                    if not is_valid and pub_date_str:
-                        # Reject if contains old years
-                        if any(yr in pub_date_str for yr in ['2024', '2023', '2022', '2021', '2020']):
-                            continue
-                        # Accept if contains recent months
-                        if '2026' in pub_date_str or '2025' in pub_date_str:
-                            # Check for months that are definitely > 2 months old
-                            if any(m in pub_date_str.lower() for m in ['january 2025', 'february 2025', 'march 2025', 
-                                                                         'april 2025', 'may 2025', 'june 2025',
-                                                                         'july 2025', 'august 2025', 'september 2025',
-                                                                         'october 2025', 'november 2025']):
-                                continue  # Skip old 2025 dates
-                            is_valid = True
-                    
-                    if is_valid:
-                        filtered_news.append(item)
-                
+                    item['is_new'] = True  # whole window is 7 days
+                    filtered_news.append(item)
+
                 competitor_data['competitor_news'] = filtered_news
-                
+
                 # Update no_recent_news flag if all items were filtered out
                 if not filtered_news:
                     competitor_data['no_recent_news'] = True
-                    competitor_data['no_recent_news_note'] = "No material competitive announcements found within the last 2 months."
+                    competitor_data['no_recent_news_note'] = "No material watchlist read-through in the last 7 days."
     except (json.JSONDecodeError, AttributeError):
         pass
     
@@ -1775,21 +1756,23 @@ def research_competitors_asx(client: anthropic.Anthropic, competitor_codes: list
             continue
         
         latest = sensitive[0]
-        
-        # Only include if within last 14 days (approximate check via date string)
-        # Note: Date parsing could be improved for exact validation
-        
+
+        # Only include if the announcement is within the last 7 days.
+        if _parse_within_days(latest['date'], 7) is None:
+            continue
+
         competitor_news.append({
             "competitor": f"{code} (ASX)",
             "peer_ticker": f"{code}.AX",
             "news": latest['title'],
             "quote": None,
             "publication_date": latest['date'],
+            "is_new": True,
             "source_name": "ASX Announcement",
             "source_url": latest['pdf_url'],
             "implications": "See ASX announcement for details"
         })
-    
+
     return competitor_news
 
 
@@ -1974,9 +1957,10 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
             else:
                 item_html = f"<strong>{item.get('type', 'News')}:</strong> {item.get('title', 'Untitled')}"
             if item.get('date'):
-                item_html += f" ({item['date']})"
-            if item.get('source_url'):
-                item_html += f' <a href="{item["source_url"]}" style="color:#3498db;">[Source]</a>'
+                item_html += f' <strong style="color:#2c3e50;">[{to_ddmmyy(item["date"])}]</strong>'
+            link_url = item.get('source_url') or stock.get('asx_url')
+            if link_url:
+                item_html += f' <a href="{link_url}" style="color:#3498db;">[Source]</a>'
             if item.get('summary'):
                 item_html += f"<br><em style=\"color:#7f8c8d;font-size:0.9em;\">{item['summary']}</em>"
             new_info_items.append(f"<li>{item_html}</li>")
@@ -1989,13 +1973,13 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
     
     if market_update.get('update_type') and market_update.get('update_type') != 'Not found':
         market_update_html = f"""<strong>Type:</strong> {market_update.get('update_type')}<br>
-<strong>Date:</strong> {market_update.get('update_date', 'Not found')}<br>
+<strong>Date:</strong> {to_ddmmyy(market_update.get('update_date', '')) or 'Not found'}<br>
 <strong>Key Financials:</strong> {market_update.get('key_financials', 'Not found')}<br>
 <strong>Guidance:</strong> {market_update.get('guidance', 'None mentioned')}"""
     else:
         market_update_html = "No recent price-sensitive market update found."
     
-    # Industry dynamics - with [NEW] tag for items from last 7 days
+    # Industry dynamics (last 7 days) - date shown DD/MM/YY with a source link
     ind_points = industry.get('data_points') or []
     if ind_points:
         ind_items = []
@@ -2005,36 +1989,31 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
             fact = point.get('fact') or ''
             if not fact or fact == 'N/A':
                 continue
-            
-            # Add [NEW] tag if published in last 7 days
-            is_new = point.get('is_new', False)
-            new_tag = '<span style="color:#e74c3c;font-weight:bold;">[NEW]</span> ' if is_new else ''
-            
+
             source_name = point.get('source_name') or point.get('source')
             source_url = point.get('source_url')
-            pub_date = point.get('publication_date', '')
-            
-            item = f"{new_tag}{fact}"
+            pub_date = to_ddmmyy(point.get('publication_date', ''))
+
+            item = fact
+            # Date badge first so recency is unmistakable
+            if pub_date and pub_date != 'Date not verified':
+                item += f' <strong style="color:#2c3e50;">[{pub_date}]</strong>'
             if source_name and source_name != 'N/A':
                 if source_url:
-                    item += f' <a href="{source_url}" style="color:#3498db;">({source_name}'
-                    if pub_date and pub_date != 'Date not verified':
-                        item += f', {pub_date}'
-                    item += ')</a>'
+                    item += f' <a href="{source_url}" style="color:#3498db;">({source_name})</a>'
                 else:
-                    item += f' ({source_name}'
-                    if pub_date and pub_date != 'Date not verified':
-                        item += f', {pub_date}'
-                    item += ')'
-            
+                    item += f' ({source_name})'
+            elif source_url:
+                item += f' <a href="{source_url}" style="color:#3498db;">[Source]</a>'
+
             relevance = point.get('relevance')
             if relevance and relevance != 'N/A' and len(relevance) > 10:
                 item += f'<br><em style="color:#7f8c8d;font-size:0.9em;">→ {relevance}</em>'
-            
+
             ind_items.append(f'<li>{item}</li>')
-        industry_html = "\n".join(ind_items) if ind_items else "<li>No key driver data found in the last 2 months.</li>"
+        industry_html = "\n".join(ind_items) if ind_items else "<li>No key driver data in the last 7 days.</li>"
     else:
-        industry_html = "<li>No key driver data found in the last 2 months.</li>"
+        industry_html = "<li>No key driver data in the last 7 days.</li>"
     
     # Watchlist updates - peer earnings/transcript items relevant to the holding
     # (with [NEW] tag for items from last 7 days)
@@ -2042,7 +2021,7 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
     no_recent = competitors.get('no_recent_news', False)
 
     if no_recent or not comp_news:
-        note = competitors.get('no_recent_news_note') or 'No material watchlist updates with a read-through to the holding in the last 2 months.'
+        note = competitors.get('no_recent_news_note') or 'No material watchlist read-through in the last 7 days.'
         competitor_html = f"<li><em>{note}</em></li>"
     else:
         comp_items = []
@@ -2054,10 +2033,6 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
             if not news_desc:
                 continue
 
-            # Add [NEW] tag if published in last 7 days
-            is_new = news_item.get('is_new', False)
-            new_tag = '<span style="color:#e74c3c;font-weight:bold;">[NEW]</span> ' if is_new else ''
-
             # Peer share-price move, broker style: "Chipotle (+8.9%)"
             peer_move = news_item.get('peer_move')
             move_html = ''
@@ -2065,22 +2040,17 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
                 move_color = "#27ae60" if str(peer_move).startswith('+') else "#e74c3c"
                 move_html = f' <span style="color:{move_color};font-weight:bold;">({peer_move})</span>'
 
-            item = f"{new_tag}<strong>{competitor_name}</strong>{move_html}<strong>:</strong> {news_desc}"
+            item = f"<strong>{competitor_name}</strong>{move_html}<strong>:</strong> {news_desc}"
 
             source_name = news_item.get('source_name')
-            pub_date = news_item.get('publication_date') or news_item.get('date')
+            pub_date = to_ddmmyy(news_item.get('publication_date') or news_item.get('date') or '')
             source_url = news_item.get('source_url')
 
-            if source_name or pub_date:
-                item += ' ('
-                if pub_date:
-                    item += pub_date
-                if source_name and pub_date:
-                    item += ', '
-                if source_name:
-                    item += source_name
-                item += ')'
-
+            # Date badge first so recency is unmistakable
+            if pub_date:
+                item += f' <strong style="color:#2c3e50;">[{pub_date}]</strong>'
+            if source_name:
+                item += f' ({source_name})'
             if source_url:
                 item += f' <a href="{source_url}" style="color:#3498db;">[Source]</a>'
 
@@ -2097,7 +2067,7 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
 
             comp_items.append(f'<li>{item}</li>')
 
-        competitor_html = "\n".join(comp_items) if comp_items else "<li>No watchlist updates from the last 2 months.</li>"
+        competitor_html = "\n".join(comp_items) if comp_items else "<li>No watchlist updates in the last 7 days.</li>"
     
     # Assemble HTML
     sector_label = stock.get('sector', '')
@@ -2125,14 +2095,14 @@ def format_stock_html(stock: dict, price_data: dict, new_info: dict, market_upda
 </p>
 
 <p style="margin:15px 0;line-height:1.6;">
-<strong style="color:#2980b9;">KEY DRIVERS (Last 2 Months):</strong>
+<strong style="color:#2980b9;">KEY DRIVERS (Last 7 Days):</strong>
 </p>
 <ul style="margin:5px 0 15px 20px;line-height:1.8;">
 {industry_html}
 </ul>
 
 <p style="margin:15px 0 2px 0;line-height:1.6;">
-<strong style="color:#2980b9;">WATCHLIST — RELEVANT UPDATES (Earnings &amp; Transcripts, Last 2 Months):</strong>
+<strong style="color:#2980b9;">WATCHLIST — RELEVANT UPDATES (Earnings &amp; Transcripts, Last 7 Days):</strong>
 </p>
 <p style="margin:0 0 5px 0;color:#95a5a6;font-size:11px;font-style:italic;">
 {watch_signal_html}
@@ -2293,8 +2263,8 @@ def main():
         update_status = "✅" if market_update.get('update_type') != 'Not found' else "⚠️"
         print(update_status)
         
-        # Step 4: Research KEY DRIVERS (Claude web search - last 2 months)
-        print("   🏭 Researching key drivers (last 2 months)...", end=" ")
+        # Step 4: Research KEY DRIVERS (Claude web search - last 7 days)
+        print("   🏭 Researching key drivers (last 7 days)...", end=" ")
         industry = research_industry(client, stock)
         ind_status = "✅" if len(industry.get('data_points', [])) > 0 else "⚠️"
         print(ind_status)
