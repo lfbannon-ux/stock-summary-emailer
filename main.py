@@ -1607,6 +1607,7 @@ After searching, provide JSON only (no other text):
 
     result = call_claude_with_search(client, prompt, max_searches=2)
     search_ok = isinstance(result, str) and not result.startswith("ERROR") and result not in ("", "NO_RESPONSE")
+    search_err = None if search_ok else str(result)[:300]
 
     try:
         json_match = re.search(r'\{[\s\S]*\}', result)
@@ -1629,6 +1630,7 @@ After searching, provide JSON only (no other text):
                 data['data_points'] = filtered_points
 
             data['_search_ok'] = search_ok
+            data['_search_error'] = search_err
             return data
     except (json.JSONDecodeError, AttributeError):
         pass
@@ -1636,6 +1638,7 @@ After searching, provide JSON only (no other text):
     return {
         "data_points": [],
         "_search_ok": search_ok,
+        "_search_error": search_err,
     }
 
 
@@ -1717,6 +1720,7 @@ If NOTHING relevant within the last 7 days, return:
 
     result = call_claude_with_search(client, prompt, max_searches=3)
     search_ok = isinstance(result, str) and not result.startswith("ERROR") and result not in ("", "NO_RESPONSE")
+    search_err = None if search_ok else str(result)[:300]
 
     competitor_data = None
     try:
@@ -1770,6 +1774,7 @@ If NOTHING relevant within the last 7 days, return:
         item['peer_move'] = get_peer_move(item.get('peer_ticker'))
 
     competitor_data['_search_ok'] = search_ok
+    competitor_data['_search_error'] = search_err
     return competitor_data
 
 
@@ -1979,6 +1984,12 @@ def format_diagnostics_html(stats: dict, expanded: bool = False) -> str:
             hints.append("The ASX scraper returned nothing (announcements and last-update both empty) — asx.com.au may be blocked by the environment's network policy.")
         if not hints:
             hints.append("Research returned data but no holding cleared the materiality bar this period.")
+        # The exact error string from the first failed Claude call - the decisive
+        # clue (deprecated model vs web-search-not-enabled vs auth vs rate limit).
+        err = (stats.get('last_error') or "").strip()
+        if err:
+            safe = err.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            hints.append(f"First Claude error: {safe}")
 
     hint_html = ""
     if hints:
@@ -2313,7 +2324,8 @@ def main():
     no_update_items = []  # holdings swept into the bottom roll-up
     section_num = 0       # running number for the big sections actually shown
     stats = {"n": 0, "price_ok": 0, "asx_ni": 0, "asx_mu": 0,
-             "drv_ok": 0, "drv_items": 0, "wl_ok": 0, "wl_items": 0, "material": 0}
+             "drv_ok": 0, "drv_items": 0, "wl_ok": 0, "wl_items": 0, "material": 0,
+             "last_error": ""}
 
     for i, stock in enumerate(STOCKS, 1):
         print(f"\n{'=' * 70}")
@@ -2364,6 +2376,9 @@ def main():
         stats["drv_items"] += len(industry.get('data_points', []))
         stats["wl_ok"] += 1 if competitors.get('_search_ok') else 0
         stats["wl_items"] += len(competitors.get('competitor_news', []))
+        # Capture the first real error so an empty run reports exactly what failed.
+        if not stats["last_error"]:
+            stats["last_error"] = industry.get('_search_error') or competitors.get('_search_error') or ""
 
         # Step 6: Materiality gate - is there a MATERIAL last-7-days development?
         print("   📌 Assessing materiality...", end=" ")
