@@ -1591,6 +1591,7 @@ After searching, provide JSON only (no other text):
 """
 
     result = call_claude_with_search(client, prompt, max_searches=2)
+    search_ok = isinstance(result, str) and not result.startswith("ERROR") and result not in ("", "NO_RESPONSE")
 
     try:
         json_match = re.search(r'\{[\s\S]*\}', result)
@@ -1612,12 +1613,14 @@ After searching, provide JSON only (no other text):
 
                 data['data_points'] = filtered_points
 
+            data['_search_ok'] = search_ok
             return data
     except (json.JSONDecodeError, AttributeError):
         pass
-    
+
     return {
-        "data_points": []
+        "data_points": [],
+        "_search_ok": search_ok,
     }
 
 
@@ -1698,7 +1701,8 @@ If NOTHING relevant within the last 7 days, return:
 """
 
     result = call_claude_with_search(client, prompt, max_searches=3)
-    
+    search_ok = isinstance(result, str) and not result.startswith("ERROR") and result not in ("", "NO_RESPONSE")
+
     competitor_data = None
     try:
         json_match = re.search(r'\{[\s\S]*\}', result)
@@ -1750,6 +1754,7 @@ If NOTHING relevant within the last 7 days, return:
             continue
         item['peer_move'] = get_peer_move(item.get('peer_ticker'))
 
+    competitor_data['_search_ok'] = search_ok
     return competitor_data
 
 
@@ -1931,6 +1936,44 @@ def format_no_updates_html(entries: list) -> str:
 <p style="margin:0;color:#95a5a6;font-size:12px;line-height:1.6;">
 {listing}
 </p>
+"""
+
+
+def format_diagnostics_html(stats: dict, expanded: bool = False) -> str:
+    """Compact per-run retrieval telemetry at the very bottom of the email.
+
+    Always shows a one-line summary so we can see how much each data source
+    returned. When `expanded` (i.e. nothing was material), it also spells out the
+    most likely reason the email is thin, so an empty run is self-diagnosing.
+    """
+    n = stats.get('n', 0)
+    line = (f"prices ok {stats.get('price_ok',0)}/{n} &middot; "
+            f"ASX new-info items {stats.get('asx_ni',0)} &middot; "
+            f"last-update found {stats.get('asx_mu',0)}/{n} &middot; "
+            f"key-driver search ok {stats.get('drv_ok',0)}/{n} (items {stats.get('drv_items',0)}) &middot; "
+            f"watchlist search ok {stats.get('wl_ok',0)}/{n} (items {stats.get('wl_items',0)}) &middot; "
+            f"material {stats.get('material',0)}")
+
+    hints = []
+    if expanded:
+        if stats.get('drv_ok', 0) == 0 and stats.get('wl_ok', 0) == 0:
+            hints.append("Web search returned an error for EVERY holding — the Anthropic web-search tool is most likely unavailable or not enabled on the API key used in this environment.")
+        elif stats.get('drv_items', 0) == 0 and stats.get('wl_items', 0) == 0:
+            hints.append("Web search ran but found no usable items for any holding this period.")
+        if stats.get('asx_ni', 0) == 0 and stats.get('asx_mu', 0) == 0:
+            hints.append("The ASX scraper returned nothing (announcements and last-update both empty) — asx.com.au may be blocked by the environment's network policy.")
+        if not hints:
+            hints.append("Research returned data but no holding cleared the materiality bar this period.")
+
+    hint_html = ""
+    if hints:
+        hint_html = ('<p style="margin:4px 0 0 0;color:#c0392b;font-size:11px;line-height:1.5;">'
+                     + "<br>".join(hints) + "</p>")
+
+    return f"""
+<hr style="border:none;border-top:1px solid #ecf0f1;margin:24px 0 8px 0;">
+<p style="margin:0;color:#b0b7bd;font-size:11px;">Run diagnostics: {line}</p>
+{hint_html}
 """
 
 
@@ -2254,6 +2297,8 @@ def main():
     digest_items = []     # holdings with a material last-7-days development
     no_update_items = []  # holdings swept into the bottom roll-up
     section_num = 0       # running number for the big sections actually shown
+    stats = {"n": 0, "price_ok": 0, "asx_ni": 0, "asx_mu": 0,
+             "drv_ok": 0, "drv_items": 0, "wl_ok": 0, "wl_items": 0, "material": 0}
 
     for i, stock in enumerate(STOCKS, 1):
         print(f"\n{'=' * 70}")
@@ -2295,6 +2340,16 @@ def main():
         comp_status = "✅" if len(competitors.get('competitor_news', [])) > 0 or competitors.get('no_recent_news') else "⚠️"
         print(comp_status)
 
+        # Accumulate run diagnostics so an empty email can explain itself.
+        stats["n"] += 1
+        stats["price_ok"] += 0 if price.get('error') else 1
+        stats["asx_ni"] += new_info_count
+        stats["asx_mu"] += 1 if market_update.get('update_type') not in (None, 'Not found') else 0
+        stats["drv_ok"] += 1 if industry.get('_search_ok') else 0
+        stats["drv_items"] += len(industry.get('data_points', []))
+        stats["wl_ok"] += 1 if competitors.get('_search_ok') else 0
+        stats["wl_items"] += len(competitors.get('competitor_news', []))
+
         # Step 6: Materiality gate - is there a MATERIAL last-7-days development?
         print("   📌 Assessing materiality...", end=" ")
         try:
@@ -2328,10 +2383,13 @@ def main():
         all_html += stock_html
 
     # Final assembly - digest, then material sections, then the no-updates roll-up
+    stats["material"] = len(digest_items)
     print(f"\n📧 Assembling email... ({len(digest_items)} material / {len(no_update_items)} quiet)")
+    print(f"   🔎 Run stats: {stats}")
     digest_html = format_digest_html(digest_items, today_str)
     no_updates_html = format_no_updates_html(no_update_items)
-    final_html = wrap_in_template(digest_html + all_html + no_updates_html, today_str)
+    diagnostics_html = format_diagnostics_html(stats, expanded=(len(digest_items) == 0))
+    final_html = wrap_in_template(digest_html + all_html + no_updates_html + diagnostics_html, today_str)
     print(f"📄 Total: {len(final_html)} chars")
     
     # Send
