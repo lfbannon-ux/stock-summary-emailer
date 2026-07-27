@@ -1019,104 +1019,109 @@ def call_claude_analyze(client: anthropic.Anthropic, prompt: str) -> str:
 
 
 def _has_week_signal(new_info: dict, industry: dict, watchlist: dict) -> bool:
-    """True if there is ANY last-7-days signal to assess: the company's own recent
-    ASX announcements, a key driver flagged new, or a watchlist item flagged new."""
+    """True if there is ANY recent signal to surface: the company's own recent ASX
+    announcements, a key-driver data point, or a peer/watchlist update. By request,
+    ANY peer / look-through update counts - materiality is inclusive, not filtered."""
     own = bool((new_info or {}).get('items'))
-    drv = any(p and p.get('is_new') for p in (industry or {}).get('data_points', []))
-    peer = any(c and c.get('is_new') for c in (watchlist or {}).get('competitor_news', []))
+    drv = bool((industry or {}).get('data_points'))
+    peer = bool((watchlist or {}).get('competitor_news'))
     return own or drv or peer
+
+
+def _titles(items, keys):
+    out = []
+    for it in (items or []):
+        if not it:
+            continue
+        parts = [str(it.get(k)) for k in keys if it.get(k)]
+        if parts:
+            out.append(" - ".join(parts))
+    return out
+
+
+def _fallback_digest_line(own: list, drivers: list, peers: list) -> str:
+    """Deterministic one-liner built from gathered data, for when the LLM is
+    unavailable (e.g. billing) - keeps the email useful without any API call."""
+    parts = []
+    if peers:
+        parts.append("Watchlist: " + "; ".join(peers[:3]))
+    if own:
+        parts.append("Own: " + "; ".join(own[:2]))
+    if drivers and not (peers or own):
+        parts.append("Drivers: " + "; ".join(drivers[:2]))
+    line = " | ".join(parts)
+    return (line[:300] + "…") if len(line) > 300 else (line or "Recent update - see detail below.")
 
 
 def build_digest_line(client: anthropic.Anthropic, stock: dict, price: dict,
                       new_info: dict, market_update: dict, industry: dict,
                       watchlist: dict) -> dict:
-    """Decide whether this holding has a MATERIAL development in the last 7 days and,
-    if so, synthesise a broker-style digest line.
+    """Decide whether a holding is material and, if so, produce its digest line.
 
-    Returns {"ticker","material","sentiment","line"}. `material` gates whether the
-    holding earns a digest line + a full section; non-material holdings are swept
-    into the bottom "no material updates" list. No web search (reuses gathered data).
+    Materiality is now INCLUSIVE and DETERMINISTIC (per request): a holding is
+    material if it has ANY recent update - its own ASX announcement, a key driver,
+    or ANY peer / look-through update. The LLM is used ONLY to write a richer
+    broker-style line; if it's unavailable (billing/error) we fall back to a plain
+    deterministic summary, so the email still has content from ASX data alone.
 
-    Materiality test (both the recency gate AND the two business questions):
-      - Is there something from the LAST 7 DAYS? (recency gate)
-      - Could it impact EARNINGS, the COMPETITIVE ADVANTAGE, or reflect a real
-        CHANGE in the business? (routine admin filings do not count)
+    Returns {"ticker","material","sentiment","line"}.
     """
     ticker = stock['asx_code']
 
-    # Recency gate: no last-7-days signal at all -> not material, skip the LLM call.
+    # No recent signal at all -> genuinely quiet, goes to the bottom roll-up.
     if not _has_week_signal(new_info, industry, watchlist):
         return {"ticker": ticker, "material": False, "sentiment": "Neutral", "line": ""}
 
-    def _titles(items, keys, only_new=False):
-        out = []
-        for it in (items or []):
-            if not it or (only_new and not it.get('is_new')):
-                continue
-            parts = [str(it.get(k)) for k in keys if it.get(k)]
-            if parts:
-                out.append(" - ".join(parts))
-        return out
-
     own = _titles(new_info.get('items'), ['type', 'title', 'summary'])[:5]
-    drivers = _titles(industry.get('data_points'), ['fact'], only_new=True)[:4]
-    peers = []
+    drivers = _titles(industry.get('data_points'), ['fact'])[:4]
+    peers_desc = []           # verbose, for the LLM prompt
+    peers_short = []          # compact "Name: news", for the deterministic fallback
     for it in (watchlist.get('competitor_news') or []):
-        if not it or not it.get('is_new'):
+        if not it:
             continue
+        name = it.get('competitor', '')
         move = f" ({it.get('peer_move')})" if it.get('peer_move') else ""
         q = f' Quote: "{it.get("quote")}"' if it.get('quote') else ""
-        peers.append(f"{it.get('competitor','')}{move}: {it.get('news','')}.{q} Read-through: {it.get('implications','')}")
-    peers = peers[:5]
+        peers_desc.append(f"{name}{move}: {it.get('news','')}.{q} Read-through: {it.get('implications','')}")
+        news = it.get('news', '')
+        peers_short.append(f"{name}{move}: {news}" if news else f"{name}{move}")
+    peers_desc, peers_short = peers_desc[:5], peers_short[:5]
 
     change = price.get('change_percent')
     price_line = f"{change:+.1f}% yest" if isinstance(change, (int, float)) else "n/a"
 
-    prompt = f"""You are a portfolio analyst deciding whether {stock['name']} (ASX: {stock['asx_code']}) deserves a spot in today's KEY UPDATES note, and if so writing its one line.
+    prompt = f"""You are a portfolio analyst writing ONE line of a KEY UPDATES note for {stock['name']} (ASX: {stock['asx_code']}).
 
-Consider these RECENT developments (roughly the last two weeks):
+RECENT developments (all should be treated as worth surfacing):
 - Company's own announcements: {own or 'none'}
 - Key drivers / data points: {drivers or 'none'}
-- Peer read-throughs (price moves + transcript quotes): {peers or 'none'}
+- Peer / look-through updates (price moves + transcript quotes): {peers_desc or 'none'}
 Share price: {price_line}
 
-STEP 1 - MATERIALITY TEST. Mark it material if ANY item answers YES to at least one:
-  (a) Could it impact the company's EARNINGS / revenue?
-  (b) Does it affect its COMPETITIVE ADVANTAGE or position?
-  (c) Does it reflect a genuine CHANGE in the business (strategy, capital, management, structure)?
-LEAN TOWARDS INCLUDING when there is real signal. In particular, these DO count as material:
-  - A peer's earnings result, trading update or guidance change that reads through to this company
-  - A meaningful commodity / rate / price move that affects this company's revenue
-  - A contract win/loss, M&A, capital or management change (this company or a peer)
-Only EXCLUDE when the sole items are routine administrative filings with no read-through (Appendix 3B/3Y/3Z, change of director's interest, becoming/ceasing a substantial holder, dividend/distribution admin, notice of meeting, TMD updates, buy-back daily notices), or when there is genuinely nothing recent at all.
-
-STEP 2 - If MATERIAL, write ONE concise, specific, ACTIONABLE line in this style (hard numbers + the read-through):
+Write ONE concise, specific, ACTIONABLE line in this style (hard numbers + the read-through), leading with the most important item - prefer a peer earnings read-through or a hard number:
 "Q4 platform FUA A$135.8bn (+28% yoy), record inflows A$5.1bn; Netwealth call flagged incumbents still losing flow to specialists."
 "Comp Cleveland-Cliffs (+8.9%): Q3 lead times out to 9 weeks, auto demand 2-yr high. Read-through: supportive for US spreads."
 Keep under ~50 words. No ticker prefix, no preamble.
 
 Output STRICT JSON only:
-{{"material": true/false, "sentiment": "Positive|Neutral|Negative|Restricted", "line": "the one-liner, or empty string if not material"}}"""
+{{"sentiment": "Positive|Neutral|Negative|Restricted", "line": "the one-liner"}}"""
 
     raw = call_claude_analyze(client, prompt)
-    material, sentiment, line = False, "Neutral", ""
+    sentiment, line = "Neutral", ""
     try:
         m = re.search(r'\{[\s\S]*\}', raw)
         if m:
             obj = json.loads(m.group())
-            material = bool(obj.get('material'))
             sentiment = obj.get('sentiment') or "Neutral"
             line = (obj.get('line') or "").strip()
     except (json.JSONDecodeError, AttributeError):
         pass
     if sentiment not in ("Positive", "Neutral", "Negative", "Restricted"):
         sentiment = "Neutral"
-    if material and not line:
-        # Model said material but gave no line - fall back rather than drop it.
-        line = "Material development in the last week - see detail below."
-    if not material:
-        line = ""
-    return {"ticker": ticker, "material": material, "sentiment": sentiment, "line": line}
+    if not line:
+        # LLM unavailable/failed - build the line deterministically from ASX data.
+        line = _fallback_digest_line(own, drivers, peers_short)
+    return {"ticker": ticker, "material": True, "sentiment": sentiment, "line": line}
 
 
 # ============================================================================
@@ -1901,7 +1906,7 @@ def format_digest_html(digest_items: list, today: str) -> str:
 KEY UPDATES — {today}
 </h2>
 <p style="margin:0 0 8px 0;color:#95a5a6;font-size:11px;font-style:italic;">
-Holdings with a MATERIAL recent development (earnings, competitive position or a real change in the business), drawn from filings and peer earnings-call transcripts. Click a ticker to jump to the detail.
+Holdings with a recent update - the company's own ASX announcement, a key driver, or any peer / look-through development. Click a ticker to jump to the detail.
 </p>"""
 
     if not digest_items:
